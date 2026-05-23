@@ -17,11 +17,16 @@ The core attention patching (`attention_couple.py`) is built upon [MultiMaskCoup
 * Features a `head_start_percent` parameter. This isolates self-attention for the first X% of the generation steps, preventing the visual features of different prompt areas from bleeding into each other.
 
 
-* **Moon Mask Maker Simple:** A quick, string-based mask generator. You can define prompt zones just by typing a simple text grid (e.g., `0 1` or `0 0 \n 1 1`).
-* **Moon Mask Maker GUI:** An interactive, pop-up drawing workspace directly inside the node.
+* **Moon Mask Maker Simple:** A quick, string-based mask generator. You can define prompt zones just by typing a simple number grid
+<img width="1485" height="1182" alt="workflow (3)" src="https://github.com/user-attachments/assets/f7fc0f1a-0f89-49c5-add1-ec0d9900c124" />
+
+* **Moon Mask Maker GUI:** An interactive, pop-up drawing workspace directly inside the node (right click the node to open GUI).
+<img width="647" height="588" alt="image" src="https://github.com/user-attachments/assets/c0064859-acbe-41f5-8617-6601da251284" />
+
 * Supports adding multiple distinct layers.
-* Features non-destructive subtractive layers (useful for cutting out overlapping zones).
-* Outputs a neat batch of masks ready for the sampler.
+* Features the ability to disable/enable zone overlapping.
+* Outputs a neat batch of masks ready for the regional sampler.
+* Controls: use up/down keys to switch layers.
 
 
 
