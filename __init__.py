@@ -1,4 +1,4 @@
-from .gemini_nodes import GeminiPersistentChat, ClearableTextInput
+from .gemini_nodes import *
 from .mask_maker import *
 from .indexed_encoder import MoonIndexedEncoder
 from .regional_sampler import MoonRegionalSampler
@@ -7,6 +7,7 @@ from .markdown_output import MoonMarkdownOutput
 
 NODE_CLASS_MAPPINGS = {
     "GeminiPersistentChat": GeminiPersistentChat,
+    "GeminiAdvancedSettings": GeminiAdvancedSettings,
     "ClearableTextInput": ClearableTextInput,
     "MoonMaskMaker": MoonMaskMaker,
     "MoonIndexedEncoder": MoonIndexedEncoder,
@@ -17,6 +18,7 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiPersistentChat": "♊ Gemini Persistent Chat",
+    "GeminiAdvancedSettings": "♊ Gemini Advanced Settings",
     "ClearableTextInput": "🫙 Clearable Text Input",
     "MoonMaskMaker": "🌗 Moon Mask Maker Simple",
     "MoonIndexedEncoder": "🌗 Moon Indexed Encoder",
