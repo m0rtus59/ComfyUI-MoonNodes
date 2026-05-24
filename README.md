@@ -69,3 +69,6 @@ A native connection to the Google Gemini API.
 
 ### 2. **Clearable Text Input**
 A simple text string node that automatically wipes its text box clean immediately upon execution. Designed to be used as the prompt input for the Gemini chat node so you don't have to manually delete your last message every time.
+
+### 3. **Markdown output**
+A simple node to display the markdown structured output, such as Gemini AI output.
