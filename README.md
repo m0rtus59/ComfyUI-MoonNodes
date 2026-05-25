@@ -57,6 +57,19 @@ An interactive, pop-up drawing workspace directly inside the node.
 
 <img width="647" height="588" alt="image" src="https://github.com/user-attachments/assets/c0064859-acbe-41f5-8617-6601da251284" />
 
+### 5. **Moon Multi-Pass Sampler** (Experiment)
+
+A complete, all-in-one replacement for ComfyUI's standard `KSampler` designed to automate advanced multi-pass layout isolation and stitching natively inside a single node.
+
+*   **How it works:** Instead of denoising the entire canvas together, it dynamically splits your generation into alternating phases of **Isolated Denoising** and **Global Harmonization** based on your settings.
+    *   *Isolated Steps:* Denoises each masked region and the background separately by exactly 1 step under its own prompt, then composites them back onto the latent canvas.
+    *   *Global Steps:* Denoises the entire canvas together using the core attention patcher to keep the composition, lighting, and borders perfectly cohesive.
+*   **`local_pass_percent`:** Controls the percentage of total steps run in this alternating weave mode (e.g., at `0.20`, the first 20% of steps alternate, and the remaining 80% are finished as a unified global pass).
+*   **Dynamic Seed Offsetting:** Automatically offsets the random seed step-by-step (`seed + current_step`) during isolation [2.1]. This prevents the "Re-Seeding Trap" (constructive noise accumulation) and allows ancestral/stochastic samplers (like `euler_a` and `dpm++`) to converge cleanly.
+*   **No Downstream KSampler Required:** Plug your `Empty Latent` into the node, and connect the `LATENT` output directly to your `VAE Decode`.
+<img width="3345" height="1374" alt="workflow (6)" src="https://github.com/user-attachments/assets/93f60d0f-e8da-406f-bfbe-8efc49760ddd" />
+
+
 ---
 
 ## 🤖 Gemini API Utilities
