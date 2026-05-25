@@ -93,6 +93,7 @@ class MoonMaskMakerGUI:
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "load_masks"
+    OUTPUT_IS_LIST = (True,)
     CATEGORY = "MoonNodes"
     OUTPUT_NODE = True 
 

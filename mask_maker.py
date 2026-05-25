@@ -21,6 +21,7 @@ class MoonMaskMaker:
 
     RETURN_TYPES = ("MASK",)
     FUNCTION = "create_masks"
+    OUTPUT_IS_LIST = (True,)
     CATEGORY = "MoonNodes"
 
     def create_masks(self, mask_grid):
