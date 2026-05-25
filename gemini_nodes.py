@@ -15,7 +15,7 @@ def get_models():
     
     if not os.path.exists(models_path):
         with open(models_path, "w") as f:
-            f.write("gemini-3.5-flash\ngemini-3.1-pro-preview\ngemini-3.1-flash-preview\ngemini-3.0-pro\ngemini-2.5-pro\ngemini-2.5-flash\ngemini-2.5-flash-lite")
+            f.write("gemini-3.5-flash\ngemini-3.1-pro-preview\ngemini-3.1-flash-preview")
             
     with open(models_path, "r") as f:
         models = [line.strip() for line in f if line.strip()]
@@ -31,7 +31,7 @@ class GeminiAdvancedSettings:
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "top_k": ("INT", {"default": 40, "min": 0, "max": 100, "step": 1}),
                 "max_output_tokens": ("INT", {"default": 0, "min": 0, "max": 65536, "step": 128}),
-                "thinking_level": (["default", "low", "standard", "high"], {"default": "default"}),
+                "thinking_level": (["default", "minimal", "low", "medium", "high"], {"default": "default"}),
                 "structured_outputs_json": ("BOOLEAN", {"default": False}),
                 "google_search_grounding": ("BOOLEAN", {"default": False}),
                 "code_execution": ("BOOLEAN", {"default": False}),
@@ -90,6 +90,10 @@ class GeminiPersistentChat:
 
         if not api_key: return ("Missing API Key", "", "")
         
+        is_legacy = any(v in model_name for v in ["1.5", "2.0", "2.5"])
+        if is_legacy:
+            return ("Legacy models (1.5/2.0/2.5) are deprecated. Please update your models.txt to use Gemini 3.1+.", "", "")
+        
         genai.configure(api_key=api_key)
         
         # --- Handle Advanced Settings ---
@@ -107,11 +111,23 @@ class GeminiPersistentChat:
         if settings.get("structured_outputs", False):
             gen_config_dict["response_mime_type"] = "application/json"
             
+        # Unified 3.x thinking levels
         thinking_level = settings.get("thinking_level", "default")
         if thinking_level != "default":
-            gen_config_dict["thinking_config"] = {"thinking_level": thinking_level.upper()}
+            try:
+                # FIX: Explicitly include 'include_thoughts=True' inside the thinking configuration
+                gen_config_dict["thinking_config"] = genai.types.ThinkingConfig(
+                    thinking_level=thinking_level.upper(),
+                    include_thoughts=True
+                )
+            except AttributeError:
+                # Safe fallback if package imports differ
+                gen_config_dict["thinking_config"] = {
+                    "thinking_level": thinking_level.upper(),
+                    "include_thoughts": True
+                }
 
-        # Build config object (fallback for older SDKs if thinking_config throws an error)
+        # Build config object
         try:
             generation_config = genai.types.GenerationConfig(**gen_config_dict)
         except TypeError:
@@ -126,7 +142,7 @@ class GeminiPersistentChat:
         if settings.get("code_execution", False):
             tools.append("code_execution")
             
-        # Detect if tools changed mid-session. If so, we must clear the cache to apply them
+        # Detect if tools changed mid-session
         if session_id in _CACHED_TOOLS and _CACHED_TOOLS[session_id] != tools:
             if session_id in _SESSIONS:
                 del _SESSIONS[session_id]
@@ -158,16 +174,34 @@ class GeminiPersistentChat:
         # --- Execute API Call ---
         try:
             response = chat_session.send_message(contents, generation_config=generation_config)
-            raw_text = response.text
             
-            # Intelligent Extraction: Pull internal <think> monologues into their own output pin
-            thoughts = ""
-            final_text = raw_text
-            think_match = re.search(r"<think>(.*?)</think>", raw_text, re.DOTALL | re.IGNORECASE)
+            # --- Extract Thoughts vs Final Text (Dual-Channel Parser) ---
+            thoughts_list = []
+            text_list = []
             
-            if think_match:
-                thoughts = think_match.group(1).strip()
-                final_text = re.sub(r"<think>.*?</think>", "", raw_text, flags=re.DOTALL | re.IGNORECASE).strip()
+            try:
+                # Scan response parts and separate thoughts using the official API boolean flag
+                parts = response.candidates[0].content.parts
+                for part in parts:
+                    if hasattr(part, "thought") and part.thought:
+                        if hasattr(part, "text") and part.text:
+                            thoughts_list.append(part.text)
+                    else:
+                        if hasattr(part, "text") and part.text:
+                            text_list.append(part.text)
+            except Exception:
+                # Fallback to standard response.text if parts scanning fails
+                text_list = [response.text]
+
+            final_text = "\n".join(text_list).strip()
+            thoughts = "\n".join(thoughts_list).strip()
+            
+            # Secondary Fallback: Scan text for DeepSeek-style raw <think> tags
+            if not thoughts:
+                think_match = re.search(r"<think>(.*?)</think>", final_text, re.DOTALL | re.IGNORECASE)
+                if think_match:
+                    thoughts = think_match.group(1).strip()
+                    final_text = re.sub(r"<think>.*?</think>", "", final_text, flags=re.DOTALL | re.IGNORECASE).strip()
             
             history_text = self._format_history(session_id)
             return (final_text, thoughts, history_text)
@@ -182,7 +216,12 @@ class GeminiPersistentChat:
         full_text = ""
         for message in _SESSIONS[session_id].history:
             role = "USER" if message.role == "user" else "AI"
-            text_parts = [part.text for part in message.parts if hasattr(part, 'text')]
+            text_parts = []
+            for part in message.parts:
+                if hasattr(part, "thought") and part.thought:
+                    continue
+                if hasattr(part, "text") and part.text:
+                    text_parts.append(part.text)
             combined_text = " ".join(text_parts)
             full_text += f"--- {role} ---\n{combined_text}\n\n"
         
