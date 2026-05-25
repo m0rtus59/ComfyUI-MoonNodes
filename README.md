@@ -72,3 +72,13 @@ A simple text string node that automatically wipes its text box clean immediatel
 
 ### 3. **Markdown output**
 A simple node to display the markdown structured output, such as Gemini AI output.
+
+---
+
+## 🔒 Security & Sandboxing Rationale
+
+This repository exposes a custom web route (`/moon/save_masks`) in `moon_mask_maker_gui.py` to allow the interactive painting GUI to communicate with the ComfyUI backend. The security architecture is designed to prevent remote code execution and directory traversal:
+
+*   **Input Sanitization (No Directory Traversal):** The `node_id` parameter passed from the browser is strictly sanitized using alphanumeric-only filtering (`"".join(c for c in node_id if c.isalnum() or c in "-_")`). This prevents attackers from passing path traversal sequences (like `../`) to write files outside of ComfyUI's standard workspace.
+*   **No Arbitrary File Writes:** The route does not save raw, arbitrary binary streams to disk. Instead, the uploaded Base64 image streams are passed through Pillow (`PIL.Image.open`), converted, and re-encoded from scratch using Pillow's native, compiled PNG encoder. This strictly sanitizes the files and strips out any malicious executable payloads or steganographic scripts.
+*   **Sandboxed Directory:** All files and previews are strictly written inside ComfyUI's official, designated sandbox directory for temporary assets (`folder_paths.get_input_directory()`).
