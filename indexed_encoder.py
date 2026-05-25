@@ -18,11 +18,16 @@ class CLIPTokens(NamedTuple):
         return len(self.clip_l_tokens)
 
     def __add__(self, other):
+        # FIX: Robust channel merging. If either token has a valid CLIP G channel,
+        # we preserve it as a list instead of letting it silently collapse to None.
         clip_g = None
-        if self.clip_g_tokens is not None and other.clip_g_tokens is not None:
-            clip_g = self.clip_g_tokens + other.clip_g_tokens
+        if self.clip_g_tokens is not None or other.clip_g_tokens is not None:
+            self_g = self.clip_g_tokens if self.clip_g_tokens is not None else []
+            other_g = other.clip_g_tokens if other.clip_g_tokens is not None else []
+            clip_g = list(self_g) + list(other_g)
+            
         return CLIPTokens(
-            clip_l_tokens=self.clip_l_tokens + other.clip_l_tokens,
+            clip_l_tokens=list(self.clip_l_tokens) + list(other.clip_l_tokens),
             clip_g_tokens=clip_g,
         )
 
@@ -128,9 +133,26 @@ class MoonIndexedEncoder:
                     conditioning_list.append(None)
                     continue
 
-                # 1. Tokenize subprompts
-                suffix_targets = [tokenize_func(sub) for sub in subprompts]
+                # FIX 1: Restore Space Bias (BOS Spacing)
+                # Prepend a space to every subprompt except the first one
+                processed_subprompts = []
+                for idx, sub in enumerate(subprompts):
+                    if idx == 0:
+                        processed_subprompts.append(sub)
+                    else:
+                        processed_subprompts.append(" " + sub)
+
+                # 1. Tokenize processed subprompts
+                suffix_targets = [tokenize_func(sub) for sub in processed_subprompts]
                 
+                # FIX 2: Re-inject Comma Tokens (ID 267)
+                # Append a comma token to every subprompt's token list except the very last one.
+                # This ensures they partition with the correct token lengths.
+                for i in range(len(suffix_targets) - 1):
+                    has_g = suffix_targets[i].clip_g_tokens is not None
+                    comma_token = CLIPTokens(clip_l_tokens=[267], clip_g_tokens=[267] if has_g else None)
+                    suffix_targets[i] = suffix_targets[i] + comma_token
+
                 # 2. Partition them into bags
                 partitioned_bags = greedy_partition(suffix_targets, max_sum=75)
                 
