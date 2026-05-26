@@ -1,4 +1,3 @@
-import google.generativeai as genai
 import torch
 import numpy as np
 from PIL import Image
@@ -6,28 +5,53 @@ import hashlib
 import os
 import re
 
+from google import genai
+from google.genai import types
+
+_CLIENTS = {} # Keeps genai.Client instances alive to prevent closed httpx connections
 _SESSIONS = {}
 _LAST_IMAGE_HASH = {}
-_CACHED_TOOLS = {}
+_CACHED_SETUP = {}
 
 def get_models():
+    """Reads models from models.txt, generating a default list if missing."""
     models_path = os.path.join(os.path.dirname(__file__), "models.txt")
+    default_models = [
+        "gemini-3.5-flash",
+        "gemini-3.5-pro",
+        "gemini-3.0-flash",
+        "gemini-3.0-pro",
+        "gemini-2.5-flash",
+        "gemini-2.5-pro"
+    ]
     
+    # Create default file if it doesn't exist
     if not os.path.exists(models_path):
-        with open(models_path, "w") as f:
-            f.write("gemini-3.5-flash\ngemini-3.1-pro-preview\ngemini-3.1-flash-preview")
+        try:
+            with open(models_path, "w") as f:
+                f.write("# Add one model name per line.\n")
+                f.write("# Lines starting with '#' are ignored.\n")
+                f.write("\n".join(default_models))
+        except Exception:
+            pass # Fail silently to defaults if folder is read-only
             
-    with open(models_path, "r") as f:
-        models = [line.strip() for line in f if line.strip()]
-    return models if models else ["gemini-3.5-flash"]
+    # Read the file
+    try:
+        with open(models_path, "r") as f:
+            models = [line.strip() for line in f if line.strip() and not line.startswith("#")]
+        return models if models else default_models
+    except Exception:
+        return default_models
 
+MODELS = get_models()
 
 class GeminiAdvancedSettings:
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.05}),
+                # 1.0 is the strict minimum recommended for Gemini 3.0+ thinking models
+                "temperature": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 2.0, "step": 0.05}),
                 "top_p": ("FLOAT", {"default": 0.95, "min": 0.0, "max": 1.0, "step": 0.05}),
                 "top_k": ("INT", {"default": 40, "min": 0, "max": 100, "step": 1}),
                 "max_output_tokens": ("INT", {"default": 0, "min": 0, "max": 65536, "step": 128}),
@@ -35,7 +59,6 @@ class GeminiAdvancedSettings:
                 "structured_outputs_json": ("BOOLEAN", {"default": False}),
                 "google_search_grounding": ("BOOLEAN", {"default": False}),
                 "code_execution": ("BOOLEAN", {"default": False}),
-                "url_context": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -44,7 +67,7 @@ class GeminiAdvancedSettings:
     FUNCTION = "get_settings"
     CATEGORY = "MoonNodes"
 
-    def get_settings(self, temperature, top_p, top_k, max_output_tokens, thinking_level, structured_outputs_json, google_search_grounding, code_execution, url_context):
+    def get_settings(self, temperature, top_p, top_k, max_output_tokens, thinking_level, structured_outputs_json, google_search_grounding, code_execution):
         return ({
             "temperature": temperature,
             "top_p": top_p,
@@ -54,7 +77,6 @@ class GeminiAdvancedSettings:
             "structured_outputs": structured_outputs_json,
             "google_search_grounding": google_search_grounding,
             "code_execution": code_execution,
-            "url_context": url_context,
         },)
 
 
@@ -64,7 +86,7 @@ class GeminiPersistentChat:
         return {
             "required": {
                 "api_key": ("STRING", {"default": ""}),
-                "model_name": (get_models(),), 
+                "model_name": (MODELS,), 
                 "system_instruction": ("STRING", {"multiline": True, "default": "Expert prompt engineer."}),
                 "user_prompt": ("STRING", {"multiline": True}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
@@ -90,78 +112,90 @@ class GeminiPersistentChat:
 
         if not api_key: return ("Missing API Key", "", "")
         
-        is_legacy = any(v in model_name for v in ["1.5", "2.0", "2.5"])
-        if is_legacy:
-            return ("Legacy models (1.5/2.0/2.5) are deprecated. Please update your models.txt to use Gemini 3.1+.", "", "")
-        
-        genai.configure(api_key=api_key)
-        
+        # --- Persistent Client Management ---
+        client_recreated = False
+        if session_id not in _CLIENTS or getattr(_CLIENTS[session_id], '_api_key_used', '') != api_key:
+            _CLIENTS[session_id] = genai.Client(api_key=api_key)
+            _CLIENTS[session_id]._api_key_used = api_key
+            client_recreated = True
+            
         # --- Handle Advanced Settings ---
         settings = advanced_settings or {}
         
-        gen_config_dict = {
-            "temperature": settings.get("temperature", 0.7),
+        config_kwargs = {
+            "temperature": settings.get("temperature", 1.0),
             "top_p": settings.get("top_p", 0.95),
             "top_k": settings.get("top_k", 40),
+            "system_instruction": system_instruction
         }
         
         if settings.get("max_output_tokens", 0) > 0:
-            gen_config_dict["max_output_tokens"] = settings["max_output_tokens"]
+            config_kwargs["max_output_tokens"] = settings["max_output_tokens"]
             
         if settings.get("structured_outputs", False):
-            gen_config_dict["response_mime_type"] = "application/json"
+            config_kwargs["response_mime_type"] = "application/json"
             
-        # Unified 3.x thinking levels
+        # Strictly typed Thinking Config
         thinking_level = settings.get("thinking_level", "default")
         if thinking_level != "default":
-            try:
-                # FIX: Explicitly include 'include_thoughts=True' inside the thinking configuration
-                gen_config_dict["thinking_config"] = genai.types.ThinkingConfig(
-                    thinking_level=thinking_level.upper(),
-                    include_thoughts=True
-                )
-            except AttributeError:
-                # Safe fallback if package imports differ
-                gen_config_dict["thinking_config"] = {
-                    "thinking_level": thinking_level.upper(),
-                    "include_thoughts": True
-                }
+            # include_thoughts=True exposes the thought stream over the API connection
+            config_kwargs["thinking_config"] = {
+                "thinking_level": thinking_level.upper(),
+                "include_thoughts": True 
+            }
 
-        # Build config object
-        try:
-            generation_config = genai.types.GenerationConfig(**gen_config_dict)
-        except TypeError:
-            if "thinking_config" in gen_config_dict:
-                del gen_config_dict["thinking_config"]
-            generation_config = genai.types.GenerationConfig(**gen_config_dict)
-
-        # Define API Tools
+        # Strongly typed API Tools
         tools = []
         if settings.get("google_search_grounding", False):
-            tools.append("google_search_retrieval")
+            tools.append(types.Tool(google_search=types.GoogleSearch()))
         if settings.get("code_execution", False):
-            tools.append("code_execution")
-            
-        # Detect if tools changed mid-session
-        if session_id in _CACHED_TOOLS and _CACHED_TOOLS[session_id] != tools:
-            if session_id in _SESSIONS:
-                del _SESSIONS[session_id]
-        _CACHED_TOOLS[session_id] = tools
+            tools.append(types.Tool(code_execution=types.CodeExecution()))
+        if tools:
+            config_kwargs["tools"] = tools
 
-        # --- Initialize Session ---
+        # Build Config object
+        generation_config = types.GenerateContentConfig(**config_kwargs)
+
+        # Detect if model, system prompt, tools, thinking level, or structured JSON changed
+        current_setup_hash = hashlib.md5(
+            f"{model_name}_"
+            f"{system_instruction}_"
+            f"{settings.get('google_search_grounding', False)}_"
+            f"{settings.get('code_execution', False)}_"
+            f"{settings.get('thinking_level', 'default')}_"
+            f"{settings.get('structured_outputs', False)}".encode()
+        ).hexdigest()
+        
+        settings_changed = (_CACHED_SETUP.get(session_id) != current_setup_hash)
+        _CACHED_SETUP[session_id] = current_setup_hash
+
+        # --- Dynamic Session Re-creation & History Migration ---
+        existing_history = None
+        
+        # If the client connection refreshed, or settings changed, extract the history first
+        if (client_recreated or settings_changed) and session_id in _SESSIONS:
+            old_chat = _SESSIONS[session_id]
+            # Safely fetch active chat history from the dying session
+            existing_history = old_chat.get_history() if callable(getattr(old_chat, 'get_history', None)) else getattr(old_chat, 'history', [])
+            del _SESSIONS[session_id]
+            
+        client = _CLIENTS[session_id]
+
+        # --- Initialize Session (Sown with existing history if migration occurred) ---
         if session_id not in _SESSIONS:
-            model = genai.GenerativeModel(
-                model_name=model_name, 
-                system_instruction=system_instruction,
-                tools=tools if tools else None
+            _SESSIONS[session_id] = client.chats.create(
+                model=model_name, 
+                config=generation_config,
+                history=existing_history if existing_history else None
             )
-            _SESSIONS[session_id] = model.start_chat(history=[])
-            if session_id in _LAST_IMAGE_HASH:
+            # Only delete the image cache hash if starting a brand new session without history
+            if not existing_history and session_id in _LAST_IMAGE_HASH:
                 del _LAST_IMAGE_HASH[session_id]
 
         chat_session = _SESSIONS[session_id]
         contents = [user_prompt]
         
+        # Process Images natively into PIL objects
         if image is not None:
             current_hash = hashlib.md5(image.cpu().numpy().tobytes()).hexdigest()
             if _LAST_IMAGE_HASH.get(session_id) != current_hash:
@@ -173,30 +207,32 @@ class GeminiPersistentChat:
 
         # --- Execute API Call ---
         try:
-            response = chat_session.send_message(contents, generation_config=generation_config)
+            response = chat_session.send_message(contents, config=generation_config)
             
-            # --- Extract Thoughts vs Final Text (Dual-Channel Parser) ---
+            # --- Extract Thoughts vs Final Text ---
             thoughts_list = []
             text_list = []
             
-            try:
-                # Scan response parts and separate thoughts using the official API boolean flag
-                parts = response.candidates[0].content.parts
-                for part in parts:
-                    if hasattr(part, "thought") and part.thought:
-                        if hasattr(part, "text") and part.text:
-                            thoughts_list.append(part.text)
+            if response.candidates and response.candidates[0].content.parts:
+                for part in response.candidates[0].content.parts:
+                    text_content = getattr(part, 'text', '')
+                    if not text_content:
+                        continue
+                        
+                    # 1. Native SDK Thought Boolean
+                    if getattr(part, 'thought', False):
+                        thoughts_list.append(text_content)
                     else:
-                        if hasattr(part, "text") and part.text:
-                            text_list.append(part.text)
-            except Exception:
-                # Fallback to standard response.text if parts scanning fails
-                text_list = [response.text]
+                        # 2. SDK Bug Workaround (Catch leaked thoughts prefixed with THOUGHT:)
+                        if text_content.strip().startswith("THOUGHT:"):
+                            thoughts_list.append(text_content.replace("THOUGHT:", "", 1).strip())
+                        else:
+                            text_list.append(text_content)
 
             final_text = "\n".join(text_list).strip()
             thoughts = "\n".join(thoughts_list).strip()
             
-            # Secondary Fallback: Scan text for DeepSeek-style raw <think> tags
+            # 3. Secondary Fallback: Catch raw <think> tags if model bleeds reasoning
             if not thoughts:
                 think_match = re.search(r"<think>(.*?)</think>", final_text, re.DOTALL | re.IGNORECASE)
                 if think_match:
@@ -214,26 +250,26 @@ class GeminiPersistentChat:
             return "No history for this seed yet."
         
         full_text = ""
-        for message in _SESSIONS[session_id].history:
+        chat_session = _SESSIONS[session_id]
+        
+        # Robust history fetcher across SDK patches
+        history_items = chat_session.get_history() if callable(getattr(chat_session, 'get_history', None)) else getattr(chat_session, 'history', [])
+        
+        for message in history_items:
             role = "USER" if message.role == "user" else "AI"
             text_parts = []
-            for part in message.parts:
-                if hasattr(part, "thought") and part.thought:
-                    continue
-                if hasattr(part, "text") and part.text:
-                    text_parts.append(part.text)
+            
+            if message.parts:
+                for part in message.parts:
+                    # Ignore thoughts natively, or if they have the bugged THOUGHT prefix
+                    if getattr(part, 'thought', False):
+                        continue
+                    if getattr(part, 'text', None):
+                        if part.text.strip().startswith("THOUGHT:"):
+                            continue
+                        text_parts.append(part.text)
+                        
             combined_text = " ".join(text_parts)
             full_text += f"--- {role} ---\n{combined_text}\n\n"
         
         return full_text
-
-class ClearableTextInput:
-    @classmethod
-    def INPUT_TYPES(s):
-        return {"required": {"text": ("STRING", {"multiline": True, "default": ""})}}
-    RETURN_TYPES = ("STRING",)
-    FUNCTION = "process"
-    CATEGORY = "MoonNodes"
-    OUTPUT_NODE = True
-    def process(self, text):
-        return {"ui": {"text": [text]}, "result": (text,)}
