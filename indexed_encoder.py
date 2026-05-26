@@ -6,8 +6,9 @@ from nodes import CLIPTextEncode
 SPECIAL_TOKENS = {"start": 49406, "end": 49407, "pad": 49407}
 
 class CLIPTokens(NamedTuple):
-    clip_l_tokens: list[int]
-    clip_g_tokens: list[int] | None = None
+    # Now stores tuples of (token_id, weight) instead of raw integers
+    clip_l_tokens: list[tuple[int, float]]
+    clip_g_tokens: list[tuple[int, float]] | None = None
 
     @classmethod
     def empty_tokens(cls):
@@ -18,8 +19,6 @@ class CLIPTokens(NamedTuple):
         return len(self.clip_l_tokens)
 
     def __add__(self, other):
-        # FIX: Robust channel merging. If either token has a valid CLIP G channel,
-        # we preserve it as a list instead of letting it silently collapse to None.
         clip_g = None
         if self.clip_g_tokens is not None or other.clip_g_tokens is not None:
             self_g = self.clip_g_tokens if self.clip_g_tokens is not None else []
@@ -32,18 +31,18 @@ class CLIPTokens(NamedTuple):
         )
 
     @staticmethod
-    def _get_77_tokens(subprompt_inds: list[int], pad_token: int) -> list[int]:
-        # Tightly bounds tokens to max 75 (leaving room for start and end) and pads to 77
+    def _get_77_tokens(subprompt_inds: list[tuple[int, float]], pad_token: int) -> list[tuple[int, float]]:
+        # Bounds tokens to max 75 and pads to 77, applying default 1.0 weight to special tokens
         result = (
-            [SPECIAL_TOKENS["start"]]
+            [(SPECIAL_TOKENS["start"], 1.0)]
             + subprompt_inds[:75]
-            + [SPECIAL_TOKENS["end"]]
-            + [pad_token] * 75
+            + [(SPECIAL_TOKENS["end"], 1.0)]
+            + [(pad_token, 1.0)] * 75
         )
         return result[:77]
 
     def clamp_to_77_tokens(self):
-        # FIX: Clip L pads with 49407, but OpenCLIP G (SDXL) strictly pads with 0
+        # Clip L pads with 49407, OpenCLIP G (SDXL) strictly pads with 0
         return CLIPTokens(
             clip_l_tokens=self._get_77_tokens(self.clip_l_tokens, pad_token=49407),
             clip_g_tokens=(
@@ -93,18 +92,23 @@ class MoonIndexedEncoder:
         conditioning_list = []
         
         # --- Internal Helper Functions for Tokenizing and Encoding ---
-        def convert_comfy_tokens(comfy_tokens) -> list[int]:
+        def convert_comfy_tokens(comfy_tokens) -> list[tuple[int, float]]:
             if not comfy_tokens or not comfy_tokens[0]:
                 return []
-            tokens = [t for t, _ in comfy_tokens[0]]
-            if SPECIAL_TOKENS["end"] in tokens:
-                return tokens[1 : tokens.index(SPECIAL_TOKENS["end"])]
+            tokens = comfy_tokens[0] # List of (token_id, weight) tuples
+            
+            # Extract just the IDs to locate the end token
+            token_ids = [t for t, _ in tokens]
+            if SPECIAL_TOKENS["end"] in token_ids:
+                end_idx = token_ids.index(SPECIAL_TOKENS["end"])
+                return tokens[1 : end_idx] # Slice preserves original weight tuples
             return tokens[1:] 
 
         def convert_to_comfy_tokens(tokens: CLIPTokens):
-            out = {"l": [[(t, 1.0) for t in tokens.clip_l_tokens]]}
+            # Passes original weights directly back to the CLIP encoder
+            out = {"l": [tokens.clip_l_tokens]}
             if tokens.clip_g_tokens is not None:
-                out["g"] = [[(t, 1.0) for t in tokens.clip_g_tokens]]
+                out["g"] = [tokens.clip_g_tokens]
             return out
 
         def tokenize_func(t_str: str) -> CLIPTokens:
@@ -133,8 +137,7 @@ class MoonIndexedEncoder:
                     conditioning_list.append(None)
                     continue
 
-                # FIX 1: Restore Space Bias (BOS Spacing)
-                # Prepend a space to every subprompt except the first one
+                # Space Bias (BOS Spacing)
                 processed_subprompts = []
                 for idx, sub in enumerate(subprompts):
                     if idx == 0:
@@ -142,27 +145,28 @@ class MoonIndexedEncoder:
                     else:
                         processed_subprompts.append(" " + sub)
 
-                # 1. Tokenize processed subprompts
+                # 1. Tokenize processed subprompts (preserving weight values)
                 suffix_targets = [tokenize_func(sub) for sub in processed_subprompts]
                 
-                # FIX 2: Re-inject Comma Tokens (ID 267)
-                # Append a comma token to every subprompt's token list except the very last one.
-                # This ensures they partition with the correct token lengths.
+                # 2. Re-inject Comma Tokens (ID 267) with standard weight 1.0
                 for i in range(len(suffix_targets) - 1):
                     has_g = suffix_targets[i].clip_g_tokens is not None
-                    comma_token = CLIPTokens(clip_l_tokens=[267], clip_g_tokens=[267] if has_g else None)
+                    comma_token = CLIPTokens(
+                        clip_l_tokens=[(267, 1.0)], 
+                        clip_g_tokens=[(267, 1.0)] if has_g else None
+                    )
                     suffix_targets[i] = suffix_targets[i] + comma_token
 
-                # 2. Partition them into bags
+                # 3. Partition them into bags
                 partitioned_bags = greedy_partition(suffix_targets, max_sum=75)
                 
-                # 3. Create clamped 77-token targets with correct pad values
+                # 4. Create clamped 77-token targets with correct pad values
                 targets = [
                     sum(bag, CLIPTokens.empty_tokens()).clamp_to_77_tokens()
                     for bag in partitioned_bags
                 ]
                 
-                # 4. Pass them through CLIP and merge the tensors
+                # 5. Pass them through CLIP and merge the tensors
                 encoded_embeds = [encode_func(t) for t in targets]
                 conds_merged = torch.cat([embed[0] for embed in encoded_embeds], dim=1)
                 poolers_merged = encoded_embeds[0][1]
