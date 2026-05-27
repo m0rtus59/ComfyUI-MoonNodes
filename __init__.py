@@ -17,6 +17,8 @@ NODE_CLASS_MAPPINGS = {
     "MoonMaskMakerGUI": MoonMaskMakerGUI,
     "MoonMarkdownOutput": MoonMarkdownOutput,
     "MoonMultiPassSampler": MoonMultiPassSampler,
+    "LLMSubmitInput": LLMSubmitInput,
+    "MoonQuickstart": MoonQuickstart,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -29,6 +31,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonMaskMakerGUI": "🌗 Moon Mask Maker GUI",
     "MoonMarkdownOutput": "🌗 Moon Markdown Output",
     "MoonMultiPassSampler": "🌗 Moon Multi-Area KSampler (experiment)",
+    "LLMSubmitInput": "🫙 LLM Submit Input",
+    "MoonQuickstart": "🎲 Quickstart",
 }
 WEB_DIRECTORY = "web"
 

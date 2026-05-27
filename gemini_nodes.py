@@ -106,9 +106,56 @@ class GeminiPersistentChat:
     def chat(self, api_key, model_name, system_instruction, user_prompt, seed, enable_ai_processing, image=None, advanced_settings=None):
         session_id = str(seed)
         
+        # --- Handle Paused State Gracefully ---
         if not enable_ai_processing:
             history_text = self._format_history(session_id)
-            return ("AI Processing is PAUSED.", "", history_text)
+            last_text = ""
+            last_thoughts = ""
+            
+            # If the session already exists, extract the last model response to preserve display state
+            if session_id in _SESSIONS:
+                chat_session = _SESSIONS[session_id]
+                history_items = chat_session.get_history() if callable(getattr(chat_session, 'get_history', None)) else getattr(chat_session, 'history', [])
+                
+                # Scan backwards to locate the most recent model response
+                last_model_message = None
+                for message in reversed(history_items):
+                    if message.role in ("model", "assistant"):
+                        last_model_message = message
+                        break
+                
+                if last_model_message and last_model_message.parts:
+                    last_text_parts = []
+                    last_thoughts_parts = []
+                    for part in last_model_message.parts:
+                        text_content = getattr(part, 'text', '')
+                        if not text_content:
+                            continue
+                            
+                        if getattr(part, 'thought', False):
+                            last_thoughts_parts.append(text_content)
+                        else:
+                            if text_content.strip().startswith("THOUGHT:"):
+                                last_thoughts_parts.append(text_content.replace("THOUGHT:", "", 1).strip())
+                            else:
+                                last_text_parts.append(text_content)
+                                
+                    last_text = "\n".join(last_text_parts).strip()
+                    last_thoughts = "\n".join(last_thoughts_parts).strip()
+                    
+                    # Secondary Fallback: Regex check for nested <think> structures in raw output
+                    if not last_thoughts:
+                        think_match = re.search(r"<think>(.*?)</think>", last_text, re.DOTALL | re.IGNORECASE)
+                        if think_match:
+                            last_thoughts = think_match.group(1).strip()
+                            last_text = re.sub(r"<think>.*?</think>", "", last_text, flags=re.DOTALL | re.IGNORECASE).strip()
+
+            if last_text:
+                paused_text = f"⚠️AI Processing is PAUSED⚠️\n---\n{last_text}"
+            else:
+                paused_text = "⚠️AI Processing is PAUSED⚠️"
+                
+            return (paused_text, last_thoughts, history_text)
 
         if not api_key: return ("Missing API Key", "", "")
         
