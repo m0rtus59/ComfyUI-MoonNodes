@@ -83,8 +83,31 @@ A native connection to the Google Gemini API.
 ### 2. **Clearable Text Input**
 A simple text string node that automatically wipes its text box clean immediately upon execution. Designed to be used as the prompt input for the Gemini chat node so you don't have to manually delete your last message every time.
 
-### 3. **Markdown output**
+### 3. **LLM Submit Input**
+A specialized multi-line text input node designed for manual prompt dispatching.
+
+  - Submit Prompt Button: Sends the text input downstream and instantly fires
+    the ComfyUI execution queue.
+  - Auto-Clear Toggle: When enabled (default), automatically clears the input
+    text field after a successful queue execution. Disabling it leaves your
+    prompt intact for further adjustments.
+  - Selective Execution: Standard global queue runs (using ComfyUI's main
+    sidebar) will process the workflow properly, but will not submit the query to the LLM (`trigger` output should be connected to the `enable_ai_processing` input, see the screenshot below).
+
+### 4. **Markdown output**
 A simple node to display the markdown structured output, such as Gemini AI output.
+<img width="1826" height="1101" alt="image" src="https://github.com/user-attachments/assets/9d7b5432-b7bd-4ef9-a3a2-03cb67f302de" />
+
+---
+## 🛠️ Other tools
+
+🎲 Quickstart
+
+A compact conversation lifecycle controller that outputs a persistent
+random integer (ideal for quick seeding, inspired by [ComfyUI-Easy-Use](https://github.com/yolain/ComfyUI-Easy-Use).
+
+  - Minimalist Interface: One single button to quickly pick a random seed number and run the queue.
+<img width="575" height="600" alt="image" src="https://github.com/user-attachments/assets/1027c227-86fa-4f6a-8256-5a9b6be14b83" />
 
 ---
 
