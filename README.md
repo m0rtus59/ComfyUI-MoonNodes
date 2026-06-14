@@ -24,12 +24,24 @@ To install this custom node pack, follow these steps:
    ```
 3. Restart ComfyUI.
 
+Or just find `ComfyUI-MoonNodes` in the ComfyUI Manager.
+
 ---
 
 ## 🎨 Regional Prompting & Masking Nodes
 
 ### 1. **Moon Indexed Encoder**
-Allows you to encode multiple prompts for different areas using a single text box separated by the `BREAK` keyword.
+Allows you to encode multiple prompts for different areas using a single text box separated by the `BREAK` keyword:
+```Example
+general prompt goes here
+BREAK
+prompt for the area 0 goes here
+BREAK
+prompt for the area 1 goes here
+BREAK
+prompt for the area 2 goes here
+```
+
 * **`greedy` Toggle:** When enabled, it uses greedy token-packing to efficiently group comma-separated subprompts into 77-token blocks to maximize CLIP encoding efficiency and prevent text truncation.
 <img width="3390" height="1245" alt="workflow (5)" src="https://github.com/user-attachments/assets/6c3b779c-ed43-4b5e-a8e7-7792a62b9dd3" />
 
