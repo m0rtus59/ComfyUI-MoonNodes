@@ -1,0 +1,16 @@
+[project]
+name = "moon-nodes"
+description = "Multi-area regional prompting nodes featuring a layered canvas mask GUI, greedy text encoder, Gemini API persistent chat utilities and more."
+readme = "README.md"
+version = "1.3.0"
+license = { file = "LICENSE" }
+dependencies = [
+    "google-genai>=0.1.0",
+]
+
+[project.urls]
+Repository = "https://github.com/m0rtus59/ComfyUI-MoonNodes"
+
+[tool.comfy]
+PublisherId = "soundslikethunder"
+DisplayName = "Moon Nodes"
