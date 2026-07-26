@@ -1,4 +1,5 @@
 import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 import { ComfyDialog } from "../../../scripts/ui.js";
 
 const LAYER_COLORS = [
@@ -6,13 +7,78 @@ const LAYER_COLORS = [
     "#FFFF33", "#FF33FF", "#33FFFF", "#FF9933"
 ];
 
+// Helper function to restore preview on node from memory or disk
+function restorePreview(node) {
+    if (!node || !node.id) return;
+    
+    const maskNamesWidget = node.widgets?.find(w => w.name === "mask_names");
+    const previewFilename = `moon_mask_preview_${node.id}.png`;
+    const imgInfo = [{ filename: previewFilename, type: "input", subfolder: "" }];
+
+    node.images = imgInfo;
+    if (node._state) {
+        node._state.images = imgInfo;
+    }
+
+    if (app.nodeOutputs) {
+        app.nodeOutputs[String(node.id)] = { images: imgInfo };
+        app.nodeOutputs[node.id] = { images: imgInfo };
+    }
+
+    // Try loading embedded Base64 preview if available in JSON data, fallback to server view URL
+    let previewSrc = `/view?filename=${encodeURIComponent(previewFilename)}&type=input&subfolder=&t=${Date.now()}`;
+    if (maskNamesWidget?.value) {
+        try {
+            const dataObj = typeof maskNamesWidget.value === "string" 
+                ? JSON.parse(maskNamesWidget.value) 
+                : maskNamesWidget.value;
+            if (dataObj.preview && dataObj.preview.startsWith("data:image")) {
+                previewSrc = dataObj.preview;
+            }
+        } catch(e) {}
+    }
+
+    const img = new Image();
+    img.src = previewSrc;
+    img.onload = () => {
+        node.imgs = [img];
+        if (app.graph) app.graph.setDirtyCanvas(true, true);
+    };
+}
+
+function openMaskGUI(node) {
+    const maskNamesWidget = node.widgets?.find(w => w.name === "mask_names");
+    let existingData = null;
+    try {
+        existingData = typeof maskNamesWidget.value === "string" 
+            ? JSON.parse(maskNamesWidget.value) 
+            : maskNamesWidget.value;
+    } catch(e) {}
+
+    const dialog = new MoonMaskDialog(node, (dataObj) => {
+        if (maskNamesWidget) {
+            const strVal = JSON.stringify(dataObj);
+            maskNamesWidget.value = strVal;
+            if (maskNamesWidget._state) {
+                maskNamesWidget._state.value = strVal;
+            }
+            if (typeof maskNamesWidget.callback === "function") {
+                maskNamesWidget.callback(strVal);
+            }
+        }
+        restorePreview(node);
+    });
+    dialog.show();
+    dialog.createDOM(existingData);
+}
+
 class MoonMaskDialog extends ComfyDialog {
     constructor(node, onSave) {
         super();
         this.node = node;
         this.onSave = onSave;
         this.layers = []; 
-        this.layerSettings = []; // Stores individual {subtract: boolean} states
+        this.layerSettings = [];
         this.activeLayerIndex = 0;
         this.brushSize = 40; 
         this.isDrawing = false;
@@ -154,7 +220,7 @@ class MoonMaskDialog extends ComfyDialog {
             footer.querySelector("#b_val").innerText = this.brushSize;
         };
 
-        // LOAD LOGIC: Determine if loading new Dict format or legacy Array format
+        // LOAD LOGIC (Handles Base64 data URLs & legacy filenames seamlessly)
         let rawFiles = [];
         let loadedSettings = [];
         let isLegacy = false;
@@ -164,12 +230,12 @@ class MoonMaskDialog extends ComfyDialog {
             loadedSettings = existingData.settings || [];
         } else if (Array.isArray(existingData) && existingData.length > 0) {
             rawFiles = existingData;
-            isLegacy = true; // Needs color remapping
+            isLegacy = true; 
         }
 
         if (rawFiles.length > 0) {
             let loadedCount = 0;
-            rawFiles.forEach((filename, idx) => {
+            rawFiles.forEach((fileStr, idx) => {
                 const layerCanvas = document.createElement("canvas");
                 layerCanvas.width = 512;
                 layerCanvas.height = 512;
@@ -178,11 +244,14 @@ class MoonMaskDialog extends ComfyDialog {
                 layerCtx.clearRect(0, 0, 512, 512);
 
                 const img = new Image();
-                img.src = `/view?filename=${filename}&type=input&t=${Date.now()}`;
+                // If fileStr is Base64 data URL, load directly from memory!
+                img.src = fileStr.startsWith("data:") 
+                    ? fileStr 
+                    : `/view?filename=${fileStr}&type=input&subfolder=&t=${Date.now()}`;
+
                 img.onload = () => {
                     layerCtx.drawImage(img, 0, 0);
 
-                    // If loading an old legacy mask, we must remap the black/white back to Neon transparent
                     if (isLegacy) {
                         const imgData = layerCtx.getImageData(0, 0, 512, 512);
                         const data = imgData.data;
@@ -229,7 +298,7 @@ class MoonMaskDialog extends ComfyDialog {
         layerCanvas.getContext("2d").clearRect(0, 0, 512, 512); 
         
         this.layers.push(layerCanvas);
-        this.layerSettings.push({ subtract: false }); // Default new layers to normal overlap
+        this.layerSettings.push({ subtract: false });
         this.activeLayerIndex = this.layers.length - 1;
         this.redrawWorkspace();
     }
@@ -287,7 +356,6 @@ class MoonMaskDialog extends ComfyDialog {
             leftGroup.appendChild(name);
             item.appendChild(leftGroup);
 
-            // Right side: Checkbox + Delete
             const rightGroup = document.createElement("div");
             rightGroup.style.display = "flex";
             rightGroup.style.alignItems = "center";
@@ -330,7 +398,6 @@ class MoonMaskDialog extends ComfyDialog {
             this.sidebar.appendChild(item);
         });
 
-        // DRAW REAL-TIME VISUALIZATION (Includes active non-destructive exclusions)
         this.ctx.fillStyle = "#000000";
         this.ctx.fillRect(0, 0, 512, 512);
         
@@ -341,7 +408,6 @@ class MoonMaskDialog extends ComfyDialog {
             
             tCtx.drawImage(layer, 0, 0);
 
-            // Apply subtractions visually from any higher layers that have 'subtract' checked
             tCtx.globalCompositeOperation = "destination-out";
             for (let j = idx + 1; j < this.layers.length; j++) {
                 if (this.layerSettings[j].subtract) {
@@ -425,7 +491,6 @@ class MoonMaskDialog extends ComfyDialog {
     }
 
     async save() {
-        // Clean out empty layers
         let validLayers = [];
         let validSettings = [];
         for(let i = 0; i < this.layers.length; i++) {
@@ -445,7 +510,6 @@ class MoonMaskDialog extends ComfyDialog {
         this.activeLayerIndex = Math.min(this.activeLayerIndex, this.layers.length - 1);
         this.redrawWorkspace();
 
-        // COMPUTE MASKS (Applies Non-Destructive Subtraction math)
         const b64Computed = this.layers.map((layerCanvas, idx) => {
             const temp = document.createElement("canvas");
             temp.width = 512; temp.height = 512;
@@ -467,10 +531,8 @@ class MoonMaskDialog extends ComfyDialog {
             return temp.toDataURL("image/png");
         });
 
-        // COMPUTE RAW (Saves untouched RGBA transparent strokes)
         const b64Raw = this.layers.map(canvas => canvas.toDataURL("image/png"));
         
-        // COMPUTE PREVIEW (Visual reflection of the GUI workspace)
         const previewCanvas = document.createElement("canvas");
         previewCanvas.width = 512; previewCanvas.height = 512;
         const pCtx = previewCanvas.getContext("2d");
@@ -493,14 +555,8 @@ class MoonMaskDialog extends ComfyDialog {
         });
         const previewB64 = previewCanvas.toDataURL("image/png");
 
-        const instantPreviewImg = new Image();
-        instantPreviewImg.src = previewB64;
-        instantPreviewImg.onload = () => {
-            this.node.imgs = [instantPreviewImg];
-            app.graph.setDirtyCanvas(true, true);
-        };
-        
         try {
+            // Save files to disk for active local session
             const response = await fetch("/moon/save_masks", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -513,7 +569,43 @@ class MoonMaskDialog extends ComfyDialog {
                 })
             });
             const data = await response.json();
-            this.onSave(data); // Send whole object to widget
+
+            // INSTANT PREVIEW UPDATE
+            const previewFilename = data.preview || `moon_mask_preview_${this.node.id}.png`;
+            const imgInfo = [{ filename: previewFilename, type: "input", subfolder: "" }];
+            
+            this.node.images = imgInfo;
+
+            if (this.node._state) {
+                this.node._state.images = imgInfo;
+            }
+
+            if (app.nodeOutputs) {
+                app.nodeOutputs[String(this.node.id)] = { images: imgInfo };
+                app.nodeOutputs[this.node.id] = { images: imgInfo };
+            }
+
+            try {
+                api.dispatchEvent(new CustomEvent("executed", { 
+                    detail: { node: String(this.node.id), output: { images: imgInfo } } 
+                }));
+            } catch(e) {}
+
+            const instantPreviewImg = new Image();
+            instantPreviewImg.src = previewB64; // Uses in-memory base64 image instantly
+            instantPreviewImg.onload = () => {
+                this.node.imgs = [instantPreviewImg];
+                if (app.graph) app.graph.setDirtyCanvas(true, true);
+            };
+
+            // Save FULL Base64 strings directly in workflow JSON for complete portability!
+            this.onSave({
+                computed: b64Computed,
+                raw: b64Raw,
+                settings: this.layerSettings,
+                preview: previewB64
+            });
+
             this.close();
         } catch (error) {
             console.error("Failed to save masks to the server:", error);
@@ -529,36 +621,43 @@ app.registerExtension({
         if (node.comfyClass === "MoonMaskMakerGUI") {
             const maskNamesWidget = node.widgets?.find(w => w.name === "mask_names");
             if (maskNamesWidget) {
-                maskNamesWidget.type = "hidden";
+                maskNamesWidget.type = "converted-widget";
+                maskNamesWidget.hidden = true;
                 maskNamesWidget.computeSize = () => [0, 0];
+                if (maskNamesWidget._state) {
+                    maskNamesWidget._state.type = "converted-widget";
+                    maskNamesWidget._state.hidden = true;
+                }
                 if (maskNamesWidget.inputEl) {
                     maskNamesWidget.inputEl.style.display = "none";
                 }
             }
+
+            const openBtn = node.addWidget("button", "🎨 Edit Masks", null, () => {
+                openMaskGUI(node);
+            });
+            openBtn.computeSize = () => [0, 22];
+
+            restorePreview(node);
         }
     },
 
     async beforeRegisterNodeDef(nodeType, nodeData, app) {
         if (nodeData.name === "MoonMaskMakerGUI") {
+            const onConfigure = nodeType.prototype.onConfigure;
+            nodeType.prototype.onConfigure = function(info) {
+                onConfigure?.apply(this, arguments);
+                restorePreview(this);
+            };
+
             const getExtraMenuOptions = nodeType.prototype.getExtraMenuOptions;
             nodeType.prototype.getExtraMenuOptions = function(canvas, options) {
                 getExtraMenuOptions?.apply(this, arguments);
                 
                 options.push({
-                    content: "Open Painting GUI...",
+                    content: "🎨 Edit Masks...",
                     callback: () => {
-                        const maskNamesWidget = this.widgets.find(w => w.name === "mask_names");
-                        let existingData = null;
-                        try {
-                            existingData = JSON.parse(maskNamesWidget.value);
-                        } catch(e) {}
-
-                        const dialog = new MoonMaskDialog(this, (dataObj) => {
-                            maskNamesWidget.value = JSON.stringify(dataObj);
-                            this.setDirtyCanvas(true, true);
-                        });
-                        dialog.show();
-                        dialog.createDOM(existingData);
+                        openMaskGUI(this);
                     }
                 });
             };

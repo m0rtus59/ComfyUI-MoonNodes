@@ -10,19 +10,25 @@ from aiohttp import web
 import folder_paths
 import time
 
+# Helper function to decode base64 string directly into a PIL Image
+def base64_to_image(b64_str, mode="L"):
+    if "," in b64_str:
+        b64_str = b64_str.split(",")[1]
+    img_data = base64.b64decode(b64_str)
+    return Image.open(BytesIO(img_data)).convert(mode)
+
 # Custom API endpoint to receive Base64 painting streams from the frontend browser
 @PromptServer.instance.routes.post("/moon/save_masks")
 async def save_masks(request):
     post = await request.json()
     
-    # SECURITY FIX: Strictly sanitize the incoming node_id to prevent directory traversal attacks (e.g. "../")
     node_id = str(post.get("node_id", ""))
     node_id = "".join(c for c in node_id if c.isalnum() or c in "-_")
     if not node_id:
         return web.json_response({"error": "Invalid node ID"}, status=400)
     
-    layers = post.get("layers", [])           # Computed masks (Grayscale L)
-    raw_layers = post.get("raw_layers", [])   # Raw strokes (RGBA transparent)
+    layers = post.get("layers", [])           # Computed masks
+    raw_layers = post.get("raw_layers", [])   # Raw strokes
     settings = post.get("settings", [])       # Checkbox settings
     preview_b64 = post.get("preview", "")
     
@@ -30,52 +36,42 @@ async def save_masks(request):
     filenames = []
     raw_filenames = []
     
-    # Generate a unique timestamp to completely bust ComfyUI's aggressive caching
     timestamp = int(time.time() * 1000)
     
-    # Clean up old masks & previews for this specific node ID to prevent hard drive bloating
+    # Clean up old mask layer files
     for f in os.listdir(input_dir):
-        if f.startswith(f"moon_mask_{node_id}_") or f.startswith(f"moon_mask_raw_{node_id}_") or f.startswith(f"moon_mask_preview_{node_id}_"):
+        if f.startswith(f"moon_mask_{node_id}_") or f.startswith(f"moon_mask_raw_{node_id}_"):
             try:
                 os.remove(os.path.join(input_dir, f))
             except OSError:
                 pass
 
-    # Save COMPUTED masks (Black/White - For ComfyUI Tensors)
+    # Save COMPUTED masks to disk
     for idx, b64_data in enumerate(layers):
-        if "," in b64_data: 
-            b64_data = b64_data.split(",")[1]
-        img_data = base64.b64decode(b64_data)
-        img = Image.open(BytesIO(img_data)).convert("L") 
+        img = base64_to_image(b64_data, mode="L")
         filename = f"moon_mask_{node_id}_{idx}_{timestamp}.png"
         img.save(os.path.join(input_dir, filename))
         filenames.append(filename)
         
-    # Save RAW masks (Transparent RGBA - For GUI Restoring)
+    # Save RAW masks to disk
     for idx, b64_data in enumerate(raw_layers):
-        if "," in b64_data: 
-            b64_data = b64_data.split(",")[1]
-        img_data = base64.b64decode(b64_data)
-        img = Image.open(BytesIO(img_data)).convert("RGBA") 
+        img = base64_to_image(b64_data, mode="RGBA")
         raw_filename = f"moon_mask_raw_{node_id}_{idx}_{timestamp}.png"
         img.save(os.path.join(input_dir, raw_filename))
         raw_filenames.append(raw_filename)
 
-    # Save the composed preview thumbnail with a timestamp
+    # Save preview image to disk
+    preview_filename = f"moon_mask_preview_{node_id}.png"
     if preview_b64:
-        if "," in preview_b64: 
-            preview_b64 = preview_b64.split(",")[1]
-        preview_data = base64.b64decode(preview_b64)
-        preview_img = Image.open(BytesIO(preview_data)).convert("RGB")
-        preview_filename = f"moon_mask_preview_{node_id}_{timestamp}.png"
+        preview_img = base64_to_image(preview_b64, mode="RGB")
         preview_filepath = os.path.join(input_dir, preview_filename)
         preview_img.save(preview_filepath)
         
-    # Corrected: Return the complete dictionary structure so JS and load_masks work correctly
     return web.json_response({
         "computed": filenames,
         "raw": raw_filenames,
-        "settings": settings
+        "settings": settings,
+        "preview": preview_filename
     })
 
 
@@ -99,7 +95,6 @@ class MoonMaskMakerGUI:
 
     @classmethod
     def IS_CHANGED(s, mask_names, unique_id):
-        # Guarantee ComfyUI re-evaluates if the JSON string updates
         return mask_names
 
     def load_masks(self, mask_names, unique_id):
@@ -107,28 +102,45 @@ class MoonMaskMakerGUI:
         
         try:
             data = json.loads(mask_names)
-            # Parse the new JSON format, fallback to standard array for backward compatibility
-            filenames = data.get("computed", []) if isinstance(data, dict) else data
+            items = data.get("computed", []) if isinstance(data, dict) else data
+            preview_data = data.get("preview", "") if isinstance(data, dict) else ""
         except:
-            filenames = []
+            items = []
+            preview_data = ""
             
         mask_tensors = []
         
-        # Read files and pack them into our [N, H, W] tensor batch
-        for f in filenames:
-            filepath = os.path.join(input_dir, f)
-            if os.path.exists(filepath):
-                img = Image.open(filepath).convert("L")
+        # Load mask tensors directly from memory (Base64) or fallback to disk files
+        for item in items:
+            if isinstance(item, str) and item.startswith("data:image"):
+                # Embedded Base64 format -> Decode directly in memory!
+                img = base64_to_image(item, mode="L")
                 mask_np = (np.array(img) > 10).astype(np.float32)
                 mask_tensor = torch.from_numpy(mask_np)
                 mask_tensors.append(mask_tensor)
+            elif isinstance(item, str):
+                # Legacy filename format -> Read from disk
+                filepath = os.path.join(input_dir, item)
+                if os.path.exists(filepath):
+                    img = Image.open(filepath).convert("L")
+                    mask_np = (np.array(img) > 10).astype(np.float32)
+                    mask_tensor = torch.from_numpy(mask_np)
+                    mask_tensors.append(mask_tensor)
+
+        # Recreate preview thumbnail on disk if missing on new machine
+        preview_filename = f"moon_mask_preview_{unique_id}.png"
+        preview_filepath = os.path.join(input_dir, preview_filename)
         
-        # Dynamically find the current timestamped preview image for this node
+        if preview_data and preview_data.startswith("data:image") and not os.path.exists(preview_filepath):
+            try:
+                p_img = base64_to_image(preview_data, mode="RGB")
+                p_img.save(preview_filepath)
+            except Exception:
+                pass
+
         ui_images = []
-        for f in os.listdir(input_dir):
-            if f.startswith(f"moon_mask_preview_{unique_id}_"):
-                ui_images = [{"filename": f, "type": "input"}]
-                break
+        if os.path.exists(preview_filepath):
+            ui_images = [{"filename": preview_filename, "type": "input", "subfolder": ""}]
 
         if not mask_tensors:
             return {
