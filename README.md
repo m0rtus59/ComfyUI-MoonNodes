@@ -30,6 +30,9 @@ Or just find `ComfyUI-MoonNodes` in the ComfyUI Manager.
 
 ## 🎨 Regional Prompting & Masking Nodes
 
+### [NEW] **Regional prompting for Anima models**
+Works the same way as the SDXL version. See `workflows` folder for the examples. Inspired by https://github.com/Sen-sou/Comfyui-Anima-Regional-Conditioning
+
 ### 1. **Moon Indexed Encoder**
 Allows you to encode multiple prompts for different areas using a single text box separated by the `BREAK` keyword:
 ```Example

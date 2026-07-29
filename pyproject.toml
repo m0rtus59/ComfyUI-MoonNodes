@@ -1,8 +1,8 @@
 [project]
 name = "moon-nodes"
-description = "Multi-area regional prompting nodes featuring a layered canvas mask GUI, greedy text encoder, Gemini API persistent chat utilities and more."
+description = "Multi-area regional prompting nodes for SDXL and Anima models, featuring a layered canvas mask GUI and indexed text encoder. Gemini LLM tools, persistent chat utilities and more."
 readme = "README.md"
-version = "1.3.1"
+version = "1.4.0"
 license = { file = "LICENSE" }
 dependencies = [
     "google-genai>=0.1.0",

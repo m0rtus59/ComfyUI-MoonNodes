@@ -1,0 +1,409 @@
+{
+  "id": "4f630b77-3324-4e40-8699-1cfed295f500",
+  "revision": 0,
+  "last_node_id": 39,
+  "last_link_id": 52,
+  "nodes": [
+    {
+      "id": 8,
+      "type": "LoadImage",
+      "pos": [
+        -1590,
+        -2430
+      ],
+      "size": [
+        280,
+        330
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            30
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "comfy-core",
+        "ver": "0.21.1",
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "ComfyUI_temp_tieis_00007_.png",
+        "image"
+      ]
+    },
+    {
+      "id": 22,
+      "type": "GeminiAdvancedSettings",
+      "pos": [
+        -1530,
+        -2050
+      ],
+      "size": [
+        250,
+        230
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "advanced_settings",
+          "type": "GEMINI_SETTINGS",
+          "links": [
+            32
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "moon-nodes",
+        "ver": "e2acf89474000da3a1dbecd8cf0880fc591d871c",
+        "Node name for S&R": "GeminiAdvancedSettings",
+        "aux_id": "m0rtus59/ComfyUI-MoonNodes"
+      },
+      "widgets_values": [
+        1,
+        0.95,
+        40,
+        0,
+        "default",
+        false,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 36,
+      "type": "LLMSubmitInput",
+      "pos": [
+        -1710,
+        -1930
+      ],
+      "size": [
+        400,
+        200
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": [
+            49
+          ]
+        },
+        {
+          "name": "trigger",
+          "type": "BOOLEAN",
+          "links": [
+            50
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "moon-nodes",
+        "ver": "04c3fca5dcbae36ba3998c3d48f73eef3522a96d",
+        "Node name for S&R": "LLMSubmitInput",
+        "aux_id": "m0rtus59/ComfyUI-MoonNodes"
+      },
+      "widgets_values": [
+        "",
+        false,
+        false,
+        null
+      ]
+    },
+    {
+      "id": 27,
+      "type": "MoonMarkdownOutput",
+      "pos": [
+        -840,
+        -2300
+      ],
+      "size": [
+        430,
+        380
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 37
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": []
+        }
+      ],
+      "properties": {
+        "cnr_id": "moon-nodes",
+        "ver": "04c3fca5dcbae36ba3998c3d48f73eef3522a96d",
+        "Node name for S&R": "MoonMarkdownOutput",
+        "markdown_text": "⚠️AI Processing is PAUSED⚠️",
+        "aux_id": "m0rtus59/ComfyUI-MoonNodes"
+      },
+      "widgets_values": [
+        "<p style=\"margin:6px 0;color:#ddd;line-height:1.6;\">⚠️AI Processing is PAUSED⚠️</p>"
+      ]
+    },
+    {
+      "id": 24,
+      "type": "MoonMarkdownOutput",
+      "pos": [
+        -830,
+        -1860
+      ],
+      "size": [
+        440,
+        300
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 5,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 34
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "moon-nodes",
+        "ver": "04c3fca5dcbae36ba3998c3d48f73eef3522a96d",
+        "Node name for S&R": "MoonMarkdownOutput",
+        "markdown_text": "",
+        "aux_id": "m0rtus59/ComfyUI-MoonNodes"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 6,
+      "type": "MoonMarkdownOutput",
+      "pos": [
+        -830,
+        -1800
+      ],
+      "size": [
+        300,
+        310
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 6,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "link": 25
+        }
+      ],
+      "outputs": [
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "cnr_id": "moon-nodes",
+        "ver": "a5bbbae212df56a9e94df124c597ac827eeb0fc1",
+        "Node name for S&R": "MoonMarkdownOutput",
+        "markdown_text": "No history for this seed yet.",
+        "aux_id": "m0rtus59/ComfyUI-MoonNodes"
+      },
+      "widgets_values": [
+        "<p style=\"margin:6px 0;color:#ddd;line-height:1.6;\">No history for this seed yet.</p>"
+      ]
+    },
+    {
+      "id": 15,
+      "type": "GeminiPersistentChat",
+      "pos": [
+        -1210,
+        -2180
+      ],
+      "size": [
+        300,
+        420
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image",
+          "shape": 7,
+          "type": "IMAGE",
+          "link": 30
+        },
+        {
+          "name": "advanced_settings",
+          "shape": 7,
+          "type": "GEMINI_SETTINGS",
+          "link": 32
+        },
+        {
+          "name": "user_prompt",
+          "type": "STRING",
+          "widget": {
+            "name": "user_prompt"
+          },
+          "link": 49
+        },
+        {
+          "name": "enable_ai_processing",
+          "type": "BOOLEAN",
+          "widget": {
+            "name": "enable_ai_processing"
+          },
+          "link": 50
+        }
+      ],
+      "outputs": [
+        {
+          "name": "text",
+          "type": "STRING",
+          "links": [
+            37
+          ]
+        },
+        {
+          "name": "thoughts",
+          "type": "STRING",
+          "links": [
+            34
+          ]
+        },
+        {
+          "name": "full_history",
+          "type": "STRING",
+          "links": [
+            25
+          ]
+        }
+      ],
+      "properties": {
+        "cnr_id": "moon-nodes",
+        "ver": "e2acf89474000da3a1dbecd8cf0880fc591d871c",
+        "Node name for S&R": "GeminiPersistentChat",
+        "aux_id": "m0rtus59/ComfyUI-MoonNodes"
+      },
+      "widgets_values": [
+        "",
+        "gemini-pro-latest",
+        "You're currently participating in the testing of the custom Gemini API nodes for ComfyUI. You don't need to do anything specific except just writing something.",
+        "",
+        2,
+        "fixed",
+        false
+      ]
+    }
+  ],
+  "links": [
+    [
+      25,
+      15,
+      2,
+      6,
+      0,
+      "STRING"
+    ],
+    [
+      30,
+      8,
+      0,
+      15,
+      0,
+      "IMAGE"
+    ],
+    [
+      32,
+      22,
+      0,
+      15,
+      1,
+      "GEMINI_SETTINGS"
+    ],
+    [
+      34,
+      15,
+      1,
+      24,
+      0,
+      "STRING"
+    ],
+    [
+      37,
+      15,
+      0,
+      27,
+      0,
+      "STRING"
+    ],
+    [
+      49,
+      36,
+      0,
+      15,
+      2,
+      "STRING"
+    ],
+    [
+      50,
+      36,
+      1,
+      15,
+      3,
+      "BOOLEAN"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.9229599817709802,
+      "offset": [
+        1775.2021006370758,
+        2517.139462838882
+      ]
+    },
+    "frontendVersion": "1.45.21"
+  },
+  "version": 0.4
+}

@@ -6,6 +6,7 @@ from .moon_mask_maker_gui import *
 from .markdown_output import *
 from .multipass_sampler import *
 from .LLM_input import *
+from .anima_regional import MoonAnimaRegionalPatcher
 
 NODE_CLASS_MAPPINGS = {
     "GeminiPersistentChat": GeminiPersistentChat,
@@ -19,6 +20,7 @@ NODE_CLASS_MAPPINGS = {
     "MoonMultiPassSampler": MoonMultiPassSampler,
     "LLMSubmitInput": LLMSubmitInput,
     "MoonQuickstart": MoonQuickstart,
+    "MoonAnimaRegionalPatcher": MoonAnimaRegionalPatcher,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -33,6 +35,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonMultiPassSampler": "🌗 Moon Multi-Area KSampler (experiment)",
     "LLMSubmitInput": "🫙 LLM Submit Input",
     "MoonQuickstart": "🎲 Quickstart",
+    "MoonAnimaRegionalPatcher": "🌗 Moon Anima / DiT Regional Patcher",
 }
 WEB_DIRECTORY = "web"
 
