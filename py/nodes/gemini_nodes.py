@@ -14,8 +14,11 @@ _LAST_IMAGE_HASH = {}
 _CACHED_SETUP = {}
 
 def get_models():
-    """Reads models from models.txt, generating a default list if missing."""
-    models_path = os.path.join(os.path.dirname(__file__), "models.txt")
+    """Reads models from models.txt in the main repository directory."""
+    # Go up two folder levels (from py/nodes/ back to repo root)
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    models_path = os.path.join(root_dir, "models.txt")
+    
     default_models = [
         "gemini-3.5-flash",
         "gemini-3.5-pro",
