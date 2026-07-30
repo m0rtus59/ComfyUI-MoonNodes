@@ -2,7 +2,7 @@ import torch
 import torch.nn.functional as F
 import comfy.samplers
 from nodes import KSamplerAdvanced, ConditioningSetMask, ConditioningCombine, ConditioningConcat, CLIPTextEncode
-from .attention_couple import AttentionCouple
+from ..core.attention_couple import AttentionCouple
 
 class MoonMultiPassSampler:
     @classmethod

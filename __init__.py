@@ -1,12 +1,12 @@
-from .gemini_nodes import *
-from .mask_maker import *
-from .indexed_encoder import *
-from .regional_sampler import *
-from .moon_mask_maker_gui import *
-from .markdown_output import *
-from .multipass_sampler import *
-from .LLM_input import *
-from .anima_regional import MoonAnimaRegionalPatcher
+from .py.nodes.gemini_nodes import *
+from .py.nodes.mask_maker import *
+from .py.nodes.indexed_encoder import *
+from .py.nodes.regional_sampler import *
+from .py.nodes.moon_mask_maker_gui import *
+from .py.nodes.markdown_output import *
+from .py.nodes.multipass_sampler import *
+from .py.nodes.LLM_input import *
+from .py.nodes.anima_regional import MoonAnimaRegionalPatcher
 
 NODE_CLASS_MAPPINGS = {
     "GeminiPersistentChat": GeminiPersistentChat,
@@ -37,6 +37,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonQuickstart": "🎲 Quickstart",
     "MoonAnimaRegionalPatcher": "🌗 Moon Anima / DiT Regional Patcher",
 }
-WEB_DIRECTORY = "web"
+
+WEB_DIRECTORY = "js"
 
 __all__ = ["NODE_CLASS_MAPPINGS", "NODE_DISPLAY_NAME_MAPPINGS", "WEB_DIRECTORY"]
