@@ -7,6 +7,7 @@ from .py.nodes.markdown_output import *
 from .py.nodes.multipass_sampler import *
 from .py.nodes.LLM_input import *
 from .py.nodes.anima_regional import MoonAnimaRegionalPatcher
+from .py.nodes.moon_wildcards import MoonSimpleWildcards
 
 NODE_CLASS_MAPPINGS = {
     "GeminiPersistentChat": GeminiPersistentChat,
@@ -21,6 +22,7 @@ NODE_CLASS_MAPPINGS = {
     "LLMSubmitInput": LLMSubmitInput,
     "MoonQuickstart": MoonQuickstart,
     "MoonAnimaRegionalPatcher": MoonAnimaRegionalPatcher,
+    "MoonSimpleWildcards": MoonSimpleWildcards,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -35,7 +37,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonMultiPassSampler": "🌗 Moon Multi-Area KSampler (experiment)",
     "LLMSubmitInput": "🫙 LLM Submit Input",
     "MoonQuickstart": "🎲 Quickstart",
-    "MoonAnimaRegionalPatcher": "🌗 Moon Anima / DiT Regional Patcher",
+    "MoonAnimaRegionalPatcher": "🌗 Moon Anima Regional Patcher",
+    "MoonSimpleWildcards": "🎲 Moon Simple Wildcards", 
 }
 
 WEB_DIRECTORY = "js"

@@ -31,7 +31,7 @@ Or just find `ComfyUI-MoonNodes` in the ComfyUI Manager.
 ## 🎨 Regional Prompting & Masking Nodes
 
 ### [NEW] **Regional prompting for Anima models**
-Works the same way as the SDXL version. See `workflows` folder for the examples. Inspired by https://github.com/Sen-sou/Comfyui-Anima-Regional-Conditioning
+Works the same way as the SDXL version, using Anima Regional Patcher node. See `workflows` folder for the examples. Inspired by https://github.com/Sen-sou/Comfyui-Anima-Regional-Conditioning
 
 ### 1. **Moon Indexed Encoder**
 Allows you to encode multiple prompts for different areas using a single text box separated by the `BREAK` keyword:
@@ -116,7 +116,12 @@ A simple node to display the markdown structured output, such as Gemini AI outpu
 ---
 ## 🛠️ Other tools
 
-🎲 Quickstart
+### [NEW] **Moon Simple Wildcards**
+A lightweight, seed-deterministic wildcard prompt generator.
+- **Syntax**: Use `[wildcard]` or `__wildcard__` in your prompt text (supports nested wildcards).
+- **Custom Wildcards**: Place your own custom `.txt` files inside the `wildcards/` directory (subfolders are supported, e.g., `[folder/name]`).
+
+### **🎲 Quickstart**
 
 A compact conversation lifecycle controller that outputs a persistent
 random integer (ideal for quick seeding, inspired by [ComfyUI-Easy-Use](https://github.com/yolain/ComfyUI-Easy-Use).
