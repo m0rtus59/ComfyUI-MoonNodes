@@ -8,6 +8,7 @@ from .py.nodes.multipass_sampler import *
 from .py.nodes.LLM_input import *
 from .py.nodes.anima_regional import MoonAnimaRegionalPatcher
 from .py.nodes.moon_wildcards import MoonSimpleWildcards
+from .py.nodes.moon_segs_to_indexed_masks import MoonSEGSToIndexedMasks
 
 NODE_CLASS_MAPPINGS = {
     "GeminiPersistentChat": GeminiPersistentChat,
@@ -23,6 +24,7 @@ NODE_CLASS_MAPPINGS = {
     "MoonQuickstart": MoonQuickstart,
     "MoonAnimaRegionalPatcher": MoonAnimaRegionalPatcher,
     "MoonSimpleWildcards": MoonSimpleWildcards,
+    "MoonSEGSToIndexedMasks": MoonSEGSToIndexedMasks,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -38,7 +40,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "LLMSubmitInput": "🫙 LLM Submit Input",
     "MoonQuickstart": "🎲 Quickstart",
     "MoonAnimaRegionalPatcher": "🌗 Moon Anima Regional Patcher",
-    "MoonSimpleWildcards": "🎲 Moon Simple Wildcards", 
+    "MoonSimpleWildcards": "🎲 Moon Simple Wildcards",
+    "MoonSEGSToIndexedMasks": "🌗 Moon SEGS to Indexed Mask List",
 }
 
 WEB_DIRECTORY = "js"
