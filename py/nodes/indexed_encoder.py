@@ -6,7 +6,7 @@ from nodes import CLIPTextEncode
 SPECIAL_TOKENS = {"start": 49406, "end": 49407, "pad": 49407}
 
 class CLIPTokens(NamedTuple):
-    # Now stores tuples of (token_id, weight) instead of raw integers
+    # Stores tuples of (token_id, weight)
     clip_l_tokens: list[tuple[int, float]]
     clip_g_tokens: list[tuple[int, float]] | None = None
 
@@ -97,7 +97,7 @@ class MoonIndexedEncoder:
                 return []
             tokens = comfy_tokens[0] # List of (token_id, weight) tuples
             
-            # Extract just the IDs to locate the end token
+            # Extract IDs to locate the end token
             token_ids = [t for t, _ in tokens]
             if SPECIAL_TOKENS["end"] in token_ids:
                 end_idx = token_ids.index(SPECIAL_TOKENS["end"])
@@ -105,7 +105,6 @@ class MoonIndexedEncoder:
             return tokens[1:] 
 
         def convert_to_comfy_tokens(tokens: CLIPTokens):
-            # Passes original weights directly back to the CLIP encoder
             out = {"l": [tokens.clip_l_tokens]}
             if tokens.clip_g_tokens is not None:
                 out["g"] = [tokens.clip_g_tokens]
@@ -138,16 +137,20 @@ class MoonIndexedEncoder:
                     continue
 
                 # Space Bias (BOS Spacing)
-                processed_subprompts = []
-                for idx, sub in enumerate(subprompts):
-                    if idx == 0:
-                        processed_subprompts.append(sub)
-                    else:
-                        processed_subprompts.append(" " + sub)
+                processed_subprompts = [
+                    sub if idx == 0 else " " + sub
+                    for idx, sub in enumerate(subprompts)
+                ]
 
                 # 1. Tokenize processed subprompts (preserving weight values)
                 suffix_targets = [tokenize_func(sub) for sub in processed_subprompts]
                 
+                # Fallback if tokenization produced no valid tokens
+                if not any(t.length > 0 for t in suffix_targets):
+                    encoded = CLIPTextEncode().encode(clip, part)[0]
+                    conditioning_list.append(encoded)
+                    continue
+
                 # 2. Re-inject Comma Tokens (ID 267) with standard weight 1.0
                 for i in range(len(suffix_targets) - 1):
                     has_g = suffix_targets[i].clip_g_tokens is not None
@@ -157,7 +160,7 @@ class MoonIndexedEncoder:
                     )
                     suffix_targets[i] = suffix_targets[i] + comma_token
 
-                # 3. Partition them into bags
+                # 3. Partition into bags (max 75 tokens per bag)
                 partitioned_bags = greedy_partition(suffix_targets, max_sum=75)
                 
                 # 4. Create clamped 77-token targets with correct pad values
@@ -166,7 +169,7 @@ class MoonIndexedEncoder:
                     for bag in partitioned_bags
                 ]
                 
-                # 5. Pass them through CLIP and merge the tensors
+                # 5. Pass through CLIP and merge tensors
                 encoded_embeds = [encode_func(t) for t in targets]
                 conds_merged = torch.cat([embed[0] for embed in encoded_embeds], dim=1)
                 poolers_merged = encoded_embeds[0][1]

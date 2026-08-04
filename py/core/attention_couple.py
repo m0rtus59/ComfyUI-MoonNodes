@@ -1,7 +1,6 @@
 import torch
 import torch.nn.functional as F
 from contextlib import nullcontext
-import copy
 import comfy
 from comfy.ldm.modules.attention import optimized_attention
 from nodes import CLIPTextEncode
@@ -46,7 +45,6 @@ def _q_spatial_from_original(q: torch.Tensor, original_shape):
 
     return (best[1], best[2]) if best else (1, S)
 
-
 def _mask_to_q_layout(mask_any, q: torch.Tensor, original_shape) -> torch.Tensor:
     B, S, _ = q.shape
 
@@ -62,11 +60,13 @@ def _mask_to_q_layout(mask_any, q: torch.Tensor, original_shape) -> torch.Tensor
     if m.ndim == 0 or (m.ndim == 1 and m.numel() == 1):
         return torch.ones((B, S, 1), dtype=q.dtype, device=q.device) * m.clamp(0.0, 1.0)
 
-    if m.ndim == 3:
+    # Flatten extra dimensions safely
+    while m.ndim > 2:
         if m.shape[0] in (1, 3, 4):
-            m = (m.any(dim=0)).to(m.dtype)
+            m = m.any(dim=0).to(m.dtype)
         else:
-            m = m.squeeze()
+            m = m.squeeze(0)
+
     if m.ndim != 2:
         raise RuntimeError(f"Expected HxW-like mask, got {tuple(m.shape)}")
 
@@ -84,11 +84,8 @@ def _to(x: torch.Tensor, device, dtype):
 def _fp32_autocast_for(t: torch.Tensor):
     dev = t.device.type
     try:
-        # Modern PyTorch 2.x unified Autocast API (suppresses deprecation warnings)
         if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
             return torch.amp.autocast(device_type=dev, enabled=False)
-        
-        # Legacy PyTorch 1.x fallback
         if dev == "cuda":
             return torch.cuda.amp.autocast(enabled=False)
         elif dev == "cpu":
@@ -98,15 +95,9 @@ def _fp32_autocast_for(t: torch.Tensor):
     return nullcontext()
 
 def set_model_patch_replace(model, patch_attn1, patch_attn2, key):
-    to = model.model_options["transformer_options"]
-    if "patches_replace" not in to:
-        to["patches_replace"] = {}
-    if "attn1" not in to["patches_replace"]:
-        to["patches_replace"]["attn1"] = {}
-    if "attn2" not in to["patches_replace"]:
-        to["patches_replace"]["attn2"] = {}
-    to["patches_replace"]["attn1"][key] = patch_attn1
-    to["patches_replace"]["attn2"][key] = patch_attn2
+    to = model.model_options.setdefault("transformer_options", {})
+    to.setdefault("patches_replace", {}).setdefault("attn1", {})[key] = patch_attn1
+    to["patches_replace"].setdefault("attn2", {})[key] = patch_attn2
 
 def iter_attn_modules(unet):
     roots = [
@@ -135,7 +126,6 @@ def apply_patches(new_model, make_patch_attn1, make_patch_attn2):
         set_model_patch_replace(new_model, make_patch_attn1(attn1), make_patch_attn2(attn2), key)
 
 class AttentionCouple:
-
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -155,8 +145,9 @@ class AttentionCouple:
         if mode == "Latent":
             return (model, positive, negative)
 
-        self.raw_positive = copy.deepcopy(positive)
-        self.raw_negative = copy.deepcopy(negative)
+        # Direct assignment avoids deepcopy CUDA/HostBuffer crashes
+        self.raw_positive = positive
+        self.raw_negative = negative
         self.isolation_pct = isolation_pct
         self.max_sigma = None 
 
@@ -172,7 +163,6 @@ class AttentionCouple:
 
         return new_model, [empty_pos[0]], [empty_neg[0]]
 
-    # --- PATCH 1: SELF-ATTENTION ISOLATION (attn1) ---
     def make_patch_attn1(self, module):
         def patch(q, k, v, extra_options):
             B, S, C = q.shape
@@ -190,10 +180,7 @@ class AttentionCouple:
                     if progress < self.isolation_pct:
                         is_isolated = True
 
-            if not is_isolated or len(self.raw_positive) <= 1:
-                return optimized_attention(q, k, v, heads)
-
-            if S > 4096:
+            if not is_isolated or len(self.raw_positive) <= 1 or S > 4096:
                 return optimized_attention(q, k, v, heads)
 
             masks_list = []
@@ -229,7 +216,6 @@ class AttentionCouple:
 
         return patch
 
-    # --- PATCH 2: CROSS-ATTENTION BLENDING (attn2) ---
     def make_patch_attn2(self, module):
         def patch(q, k, v, extra_options):
             cond_or_uncond = extra_options["cond_or_uncond"]  
@@ -260,7 +246,6 @@ class AttentionCouple:
                     else:
                         base_indices.append(idx)
 
-                masks_per_entry = []
                 num_base = len(base_indices)
 
                 if len(raw_masks) > 0:
@@ -271,24 +256,20 @@ class AttentionCouple:
                     total_w = torch.clamp(total_w, min=1e-6)
                     
                     region_weights = [w / total_w for w in w_stack]
-                    
-                    if num_base > 0:
-                        base_weight = 1.0 / total_w
-                    else:
-                        base_weight = torch.zeros_like(sum_w)
+                    base_weight = (1.0 / total_w) if num_base > 0 else torch.zeros_like(sum_w)
                 else:
                     region_weights = []
+                    base_shape = (q_anchor.shape[0], q_anchor.shape[1], 1)
                     if num_base > 0:
-                        base_weight = torch.ones((q_anchor.shape[0], q_anchor.shape[1], 1), device=q_anchor.device, dtype=torch.float32) / float(num_base)
+                        base_weight = torch.ones(base_shape, device=q_anchor.device, dtype=torch.float32) / float(num_base)
                     else:
-                        base_weight = torch.zeros((q_anchor.shape[0], q_anchor.shape[1], 1), device=q_anchor.device, dtype=torch.float32)
+                        base_weight = torch.zeros(base_shape, device=q_anchor.device, dtype=torch.float32)
 
                 ridx_map = {entry_idx: j for j, entry_idx in enumerate(region_indices)}
-                for entry_idx in range(len(conds_list)):
-                    if entry_idx in ridx_map:
-                        masks_per_entry.append(region_weights[ridx_map[entry_idx]])
-                    else:
-                        masks_per_entry.append(base_weight)
+                masks_per_entry = [
+                    region_weights[ridx_map[entry_idx]] if entry_idx in ridx_map else base_weight
+                    for entry_idx in range(len(conds_list))
+                ]
 
                 if len(conds_list) == 1:
                     ctx = conds_list[0]

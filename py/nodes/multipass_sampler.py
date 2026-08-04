@@ -25,7 +25,7 @@ class MoonMultiPassSampler:
                 "scheduler": (comfy.samplers.KSampler.SCHEDULERS, ),
                 "denoise": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
                 
-                # The Alternating Step Isolation Parameter
+                # Step Isolation Parameter
                 "local_pass_percent": ("FLOAT", {"default": 0.20, "min": 0.0, "max": 1.0, "step": 0.01}),
             }
         }
@@ -39,7 +39,7 @@ class MoonMultiPassSampler:
     def apply(self, model, clip, mask_list, positive_list, negative_list, mode, 
               latent_image, seed, steps, cfg, sampler_name, scheduler, denoise, local_pass_percent):
         
-        # Unpack lists
+        # Unpack parameters safely
         model_obj = model[0]
         clip_obj = clip[0]
         mode_val = mode[0]
@@ -53,12 +53,11 @@ class MoonMultiPassSampler:
         denoise_val = denoise[0]
         local_pct = local_pass_percent[0]
         
-        # Calculate step ranges
         start_at_step_val = round(steps_val * (1.0 - denoise_val))
         local_steps_count = round(steps_val * local_pct)
         isolate_until = min(start_at_step_val + local_steps_count, steps_val)
         
-        # 1. SMART MASK DETECTION
+        # 1. SMART MASK DETECTION & DEVICE/DTYPE ALIGNMENT
         if len(mask_list) == 1 and mask_list[0].ndim == 3 and mask_list[0].shape[0] > 1:
             masks = mask_list[0]
         else:
@@ -77,13 +76,19 @@ class MoonMultiPassSampler:
         B, C, H, W = latent_samples.shape
         num_masks = masks.shape[0]
         
-        # Calculate the Background Mask (inv_mask) at latent resolution
-        inv_mask = torch.ones((H, W), device=latent_samples.device, dtype=latent_samples.dtype)
-        for i in range(num_masks):
-            mask_2d = masks[i].unsqueeze(0).unsqueeze(0)
-            down_mask = F.interpolate(mask_2d, size=(H, W), mode="area").squeeze(0).squeeze(0)
-            inv_mask = torch.clamp(inv_mask - down_mask, 0.0, 1.0)
+        # Ensure masks match latent tensor device and dtype to prevent execution crashes
+        masks = masks.to(device=latent_samples.device, dtype=latent_samples.dtype)
         
+        # Precompute downsampled masks for latent resolution blending
+        down_masks_4d = []
+        inv_mask = torch.ones((H, W), device=latent_samples.device, dtype=latent_samples.dtype)
+        
+        for i in range(num_masks):
+            m_2d = masks[i].unsqueeze(0).unsqueeze(0)
+            d_mask = F.interpolate(m_2d, size=(H, W), mode="area").squeeze(0).squeeze(0)
+            inv_mask = torch.clamp(inv_mask - d_mask, 0.0, 1.0)
+            down_masks_4d.append(d_mask.unsqueeze(0).unsqueeze(0).expand(B, C, H, W))
+
         # ==========================================
         # PRECOMPUTE CONDITIONINGS
         # ==========================================
@@ -104,7 +109,6 @@ class MoonMultiPassSampler:
                     c_pos = r_pos
                     c_neg = r_neg
                 
-                # For Isolated Passes (Masked gets Local, Unmasked gets Base)
                 m_pos_iso = ConditioningSetMask().append(c_pos, masks[i], "default", 1.0)[0]
                 f_pos_iso = ConditioningCombine().combine(base_pos, m_pos_iso)[0]
                 
@@ -113,23 +117,21 @@ class MoonMultiPassSampler:
                 
                 isolated_conds.append((i, f_pos_iso, f_neg_iso))
                 
-                # For Global Pass (Compile all into one massive conditioning)
                 final_pos = ConditioningCombine().combine(final_pos, m_pos_iso)[0]
                 final_neg = ConditioningCombine().combine(final_neg, m_neg_iso)[0]
                 
-        # Patch the model for the global passes using AttentionCouple
+        # Patch model using AttentionCouple
         patched_model, _, _ = AttentionCouple().attention_couple(
             model=model_obj, clip=clip_obj, positive=final_pos, negative=final_neg, mode="Attention"
         )
         
         # ==========================================
-        # PHASE 1: THE ALTERNATING WEAVE LOOP (Strict Noise Preservation)
+        # PHASE 1: THE ALTERNATING WEAVE LOOP
         # ==========================================
         working_latent = latent_obj.copy()
         current_step = start_at_step_val
         
         while current_step < isolate_until:
-            # Alternates step-by-step: Even steps are isolated, Odd steps are global
             is_isolated_step = (current_step - start_at_step_val) % 2 == 0
             next_step = current_step + 1
             
@@ -137,13 +139,12 @@ class MoonMultiPassSampler:
             curr_add_noise = "enable" if current_step == start_at_step_val else "disable"
             curr_return_noise = "disable" if is_final_overall_step else "enable"
             
-            # FIX: Dynamically offset the seed at every step to prevent constructive noise accumulation in SDE/Ancestral samplers
             curr_seed = seed_val + current_step
             
             if is_isolated_step and len(isolated_conds) > 0:
                 print(f"MoonNodes: [Weave] ISOLATED Step {current_step} -> {next_step} | Seed: {curr_seed}")
                 
-                # 1. Denoise Background (Unmasked area) from current_step to next_step
+                # 1. Denoise Background
                 bg_latent_image = working_latent.copy()
                 bg_latent_image['noise_mask'] = inv_mask
                 
@@ -157,7 +158,7 @@ class MoonMultiPassSampler:
                 
                 base_latent_image = bg_latent.copy()
                 
-                # 2. Denoise each region individually for exactly 1 step
+                # 2. Denoise Regions Individually
                 for idx, f_pos, f_neg in isolated_conds:
                     region_mask = masks[idx]
                     
@@ -172,12 +173,9 @@ class MoonMultiPassSampler:
                         return_with_leftover_noise=curr_return_noise
                     )[0]
                     
-                    # Stitch the denoised region back onto our base_latent_image
-                    mask_2d = region_mask.unsqueeze(0).unsqueeze(0) 
-                    down_mask = F.interpolate(mask_2d, size=(H, W), mode="area").to(device=base_latent_image["samples"].device, dtype=base_latent_image["samples"].dtype)
-                    down_mask = down_mask.expand(B, C, H, W)
-                    
-                    base_latent_image["samples"] = base_latent_image["samples"] * (1.0 - down_mask) + reg_latent["samples"] * down_mask
+                    # Stitch denoised region onto base latent using precomputed 4D mask
+                    d_mask_4d = down_masks_4d[idx]
+                    base_latent_image["samples"] = base_latent_image["samples"] * (1.0 - d_mask_4d) + reg_latent["samples"] * d_mask_4d
                 
                 if 'noise_mask' in base_latent_image:
                     del base_latent_image['noise_mask']

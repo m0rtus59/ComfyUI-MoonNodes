@@ -10,14 +10,12 @@ from aiohttp import web
 import folder_paths
 import time
 
-# Helper function to decode base64 string directly into a PIL Image
 def base64_to_image(b64_str, mode="L"):
     if "," in b64_str:
         b64_str = b64_str.split(",")[1]
     img_data = base64.b64decode(b64_str)
     return Image.open(BytesIO(img_data)).convert(mode)
 
-# Custom API endpoint to receive Base64 painting streams from the frontend browser
 @PromptServer.instance.routes.post("/moon/save_masks")
 async def save_masks(request):
     post = await request.json()
@@ -27,9 +25,9 @@ async def save_masks(request):
     if not node_id:
         return web.json_response({"error": "Invalid node ID"}, status=400)
     
-    layers = post.get("layers", [])           # Computed masks
-    raw_layers = post.get("raw_layers", [])   # Raw strokes
-    settings = post.get("settings", [])       # Checkbox settings
+    layers = post.get("layers", [])           
+    raw_layers = post.get("raw_layers", [])   
+    settings = post.get("settings", [])       
     preview_b64 = post.get("preview", "")
     
     input_dir = folder_paths.get_input_directory()
@@ -38,7 +36,6 @@ async def save_masks(request):
     
     timestamp = int(time.time() * 1000)
     
-    # Clean up old mask layer files
     for f in os.listdir(input_dir):
         if f.startswith(f"moon_mask_{node_id}_") or f.startswith(f"moon_mask_raw_{node_id}_"):
             try:
@@ -46,21 +43,18 @@ async def save_masks(request):
             except OSError:
                 pass
 
-    # Save COMPUTED masks to disk
     for idx, b64_data in enumerate(layers):
         img = base64_to_image(b64_data, mode="L")
         filename = f"moon_mask_{node_id}_{idx}_{timestamp}.png"
         img.save(os.path.join(input_dir, filename))
         filenames.append(filename)
         
-    # Save RAW masks to disk
     for idx, b64_data in enumerate(raw_layers):
         img = base64_to_image(b64_data, mode="RGBA")
         raw_filename = f"moon_mask_raw_{node_id}_{idx}_{timestamp}.png"
         img.save(os.path.join(input_dir, raw_filename))
         raw_filenames.append(raw_filename)
 
-    # Save preview image to disk
     preview_filename = f"moon_mask_preview_{node_id}.png"
     if preview_b64:
         preview_img = base64_to_image(preview_b64, mode="RGB")
@@ -104,30 +98,26 @@ class MoonMaskMakerGUI:
             data = json.loads(mask_names)
             items = data.get("computed", []) if isinstance(data, dict) else data
             preview_data = data.get("preview", "") if isinstance(data, dict) else ""
-        except:
+        except Exception:
             items = []
             preview_data = ""
             
         mask_tensors = []
         
-        # Load mask tensors directly from memory (Base64) or fallback to disk files
         for item in items:
             if isinstance(item, str) and item.startswith("data:image"):
-                # Embedded Base64 format -> Decode directly in memory!
                 img = base64_to_image(item, mode="L")
-                mask_np = (np.array(img) > 10).astype(np.float32)
+                mask_np = np.array(img, dtype=np.float32) / 255.0
                 mask_tensor = torch.from_numpy(mask_np)
                 mask_tensors.append(mask_tensor)
             elif isinstance(item, str):
-                # Legacy filename format -> Read from disk
                 filepath = os.path.join(input_dir, item)
                 if os.path.exists(filepath):
                     img = Image.open(filepath).convert("L")
-                    mask_np = (np.array(img) > 10).astype(np.float32)
+                    mask_np = np.array(img, dtype=np.float32) / 255.0
                     mask_tensor = torch.from_numpy(mask_np)
                     mask_tensors.append(mask_tensor)
 
-        # Recreate preview thumbnail on disk if missing on new machine
         preview_filename = f"moon_mask_preview_{unique_id}.png"
         preview_filepath = os.path.join(input_dir, preview_filename)
         
@@ -148,7 +138,18 @@ class MoonMaskMakerGUI:
                 "result": (torch.zeros((1, 512, 512), dtype=torch.float32),)
             }
             
+        # Ensure all mask tensors match target spatial dimensions
+        target_shape = mask_tensors[0].shape[-2:]
+        aligned_tensors = []
+        for m in mask_tensors:
+            if m.shape[-2:] != target_shape:
+                m_4d = m.unsqueeze(0).unsqueeze(0)
+                m_4d = torch.nn.functional.interpolate(m_4d, size=target_shape, mode="nearest")
+                aligned_tensors.append(m_4d.squeeze())
+            else:
+                aligned_tensors.append(m)
+
         return {
             "ui": {"images": ui_images},
-            "result": (torch.stack(mask_tensors, dim=0),)
+            "result": (torch.stack(aligned_tensors, dim=0),)
         }

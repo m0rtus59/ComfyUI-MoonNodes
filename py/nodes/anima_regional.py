@@ -24,12 +24,8 @@ def _prepare_mask(mask: torch.Tensor) -> torch.Tensor:
     if not torch.is_tensor(mask):
         raise RuntimeError(f"Expected mask tensor, got {type(mask)}.")
     mask = mask.detach().float()
-    if mask.ndim == 2:
-        mask = mask.unsqueeze(0)
-    elif mask.ndim == 3:
-        mask = mask[:1]
-    elif mask.ndim == 4:
-        mask = mask[:1, 0]
+    while mask.ndim > 2:
+        mask = mask[0]
     return mask.clamp(0.0, 1.0).cpu().contiguous()
 
 
@@ -98,7 +94,7 @@ def _masks_to_token_masks(
 
     resized: list[torch.Tensor] = []
     for mask in masks:
-        m = F.interpolate(mask.unsqueeze(1), size=(h_tokens, w_tokens), mode="nearest-exact").squeeze(1).squeeze(0)
+        m = F.interpolate(mask.unsqueeze(0).unsqueeze(0), size=(h_tokens, w_tokens), mode="nearest-exact").squeeze()
         m = m.reshape(spatial_tokens).unsqueeze(0).expand(temporal_tokens, -1).reshape(-1)
         resized.append(m)
 
@@ -337,14 +333,14 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
     temporal_tokens = padded_t // patch_temporal
     padded_h, padded_w = math.ceil(latent_h / patch_spatial) * patch_spatial, math.ceil(latent_w / patch_spatial) * patch_spatial
 
-    region_masks_at_latent = [F.interpolate(rm.unsqueeze(1), size=(padded_h, padded_w), mode="nearest-exact").squeeze(1) for rm in patch.region_masks]
+    region_masks_at_latent = [F.interpolate(rm.unsqueeze(0).unsqueeze(0), size=(padded_h, padded_w), mode="nearest-exact").squeeze() for rm in patch.region_masks]
 
     if patch.base_mode == "global":
-        base_mask = torch.ones(1, padded_h, padded_w)
+        base_mask = torch.ones(padded_h, padded_w)
     elif patch.base_mode == "disabled":
-        base_mask = torch.zeros(1, padded_h, padded_w)
+        base_mask = torch.zeros(padded_h, padded_w)
     else:
-        base_mask = torch.ones(1, padded_h, padded_w)
+        base_mask = torch.ones(padded_h, padded_w)
         for rm in region_masks_at_latent: base_mask = (base_mask - rm).clamp(min=0.0)
 
     base_mask = base_mask * patch.base_strength
@@ -404,10 +400,6 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
 # ---------------------------------------------------------------------------
 
 class MoonAnimaRegionalPatcher:
-    """
-    Native Moon Regional Patcher for Anima (Cosmos-Predict2 / MiniTrainDIT).
-    Connects directly to MoonMaskMakerGUI (mask_list) and MoonIndexedEncoder (positive_list / negative_list).
-    """
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -451,7 +443,20 @@ class MoonAnimaRegionalPatcher:
             for m in mask_list:
                 if m.ndim == 3: cleaned_masks.extend(list(m))
                 elif m.ndim == 2: cleaned_masks.append(m)
-            masks = torch.stack(cleaned_masks, dim=0) if cleaned_masks else torch.zeros((1, 512, 512), dtype=torch.float32)
+
+            if cleaned_masks:
+                target_shape = cleaned_masks[0].shape[-2:]
+                aligned_masks = []
+                for m in cleaned_masks:
+                    if m.shape[-2:] != target_shape:
+                        m_4d = m.unsqueeze(0).unsqueeze(0)
+                        m_4d = F.interpolate(m_4d, size=target_shape, mode="nearest")
+                        aligned_masks.append(m_4d.squeeze())
+                    else:
+                        aligned_masks.append(m)
+                masks = torch.stack(aligned_masks, dim=0)
+            else:
+                masks = torch.zeros((1, 512, 512), dtype=torch.float32)
 
         num_masks = masks.shape[0]
 

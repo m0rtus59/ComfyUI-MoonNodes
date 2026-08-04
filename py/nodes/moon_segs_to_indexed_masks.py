@@ -29,7 +29,6 @@ def seg_to_full_mask(seg, canvas_shape):
 
     v1, v2, v3, v4 = [int(v) for v in r]
 
-    # Auto-detect coordinate ordering
     if (v4 - v2 == ch) and (v3 - v1 == cw):
         x1, y1, x2, y2 = v1, v2, v3, v4
     elif (v3 - v1 == ch) and (v4 - v2 == cw):
@@ -48,9 +47,7 @@ def seg_to_full_mask(seg, canvas_shape):
         return full_mask
 
     if (ch, cw) != (box_h, box_w):
-        cmask_tensor = (
-            torch.from_numpy(cmask).unsqueeze(0).unsqueeze(0).float()
-        )
+        cmask_tensor = torch.from_numpy(cmask).unsqueeze(0).unsqueeze(0).float()
         cmask_resized = F.interpolate(
             cmask_tensor,
             size=(box_h, box_w),
@@ -73,12 +70,6 @@ def sanitize_to_2d_tensor(t):
 
 
 def parse_segs_or_masks(segs_or_masks):
-    """Parses `segs_or_masks` input which can be:
-
-    - SEGS tuple: (canvas_shape, seg_list)
-    - MASK tensor: (B, H, W) or (H, W)
-    - List of MASK tensors / SEGS tuples
-    """
     extracted_masks_np = []
     target_h, target_w = None, None
 
@@ -92,7 +83,6 @@ def parse_segs_or_masks(segs_or_masks):
         if item is None:
             continue
 
-        # Case A: SEGS tuple -> (canvas_shape, seg_list)
         if (
             isinstance(item, tuple)
             and len(item) >= 2
@@ -105,7 +95,6 @@ def parse_segs_or_masks(segs_or_masks):
                     if np.any(m > 0.5):
                         extracted_masks_np.append(m)
 
-        # Case B: PyTorch MASK Tensor
         elif isinstance(item, torch.Tensor):
             t = item.cpu().detach()
             while t.ndim > 3:
@@ -135,7 +124,6 @@ def parse_segs_or_masks(segs_or_masks):
                     if np.any(m_np > 0.5):
                         extracted_masks_np.append(m_np)
 
-        # Case C: Numpy Array MASK
         elif isinstance(item, np.ndarray):
             m_np = (item > 0.5).astype(np.float32)
             if target_h is None or target_w is None:
@@ -154,7 +142,6 @@ class MoonSEGSToIndexedMasks:
     def INPUT_TYPES(s):
         return {
             "required": {
-                # Accepts SEGS (Ultralytics/Impact) OR MASK batch/list (SAM/Florence-2)
                 "segs_or_masks": (
                     "SEGS,MASK",
                     {
@@ -190,12 +177,10 @@ class MoonSEGSToIndexedMasks:
             else fallback_to_base
         )
 
-        # 1. Parse mandatory segs_or_masks input
         (target_h, target_w), char_masks_np = parse_segs_or_masks(
             segs_or_masks
         )
 
-        # 2. Parse optional base_masks if connected
         b_list = []
         if base_masks is not None and len(base_masks) > 0:
             for item in base_masks:
@@ -209,16 +194,13 @@ class MoonSEGSToIndexedMasks:
                     elif isinstance(item, np.ndarray):
                         b_list.append(sanitize_to_2d_tensor(item))
 
-        # Determine canvas size fallback
         if target_h is None or target_w is None:
             if len(b_list) > 0:
-                target_h, target_w = int(b_list[0].shape[-2]), int(
-                    b_list[0].shape[-1]
-                )
+                target_h, target_w = int(b_list[0].shape[-2]), int(b_list[0].shape[-1])
             else:
                 target_h, target_w = 512, 512
 
-        # --- MODE 1: Standalone Converter (base_masks left DISCONNECTED) ---
+        # --- MODE 1: Standalone Converter ---
         if len(b_list) == 0:
             if not char_masks_np:
                 return (torch.zeros((1, target_h, target_w)),)
@@ -228,10 +210,9 @@ class MoonSEGSToIndexedMasks:
             ]
             return (torch.stack(out_tensors, dim=0),)
 
-        # --- MODE 2: Indexed Matcher (base_masks IS CONNECTED) ---
+        # --- MODE 2: Indexed Matcher ---
         num_regions = len(b_list)
 
-        # Upscale base_masks to match target canvas size for overlap scoring
         base_np_list = []
         for bm in b_list:
             bm_tensor = bm.unsqueeze(0).unsqueeze(0)
@@ -251,7 +232,10 @@ class MoonSEGSToIndexedMasks:
 
         for c_mask in char_masks_np:
             scores = [np.sum(c_mask * b_mask) for b_mask in base_np_list]
-            best_idx = int(np.argmax(scores))
+            max_score = np.max(scores)
+            
+            # Match to best overlapping region
+            best_idx = int(np.argmax(scores)) if max_score > 0 else 0
 
             out_masks_np[best_idx] = np.maximum(out_masks_np[best_idx], c_mask)
             region_has_char[best_idx] = True

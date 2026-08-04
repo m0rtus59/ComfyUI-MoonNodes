@@ -32,7 +32,7 @@ class MoonMaskMaker:
         try:
             grid = [line.split() for line in lines]
             arr = np.array(grid, dtype=int)
-        except:
+        except Exception:
             return (torch.zeros((1, 90, 90)),)
 
         zones = np.unique(arr)
