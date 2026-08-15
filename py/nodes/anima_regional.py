@@ -1,4 +1,5 @@
 import math
+import re
 from functools import partial
 from typing import Optional
 
@@ -98,103 +99,94 @@ def _masks_to_token_masks(
         m = m.reshape(spatial_tokens).unsqueeze(0).expand(temporal_tokens, -1).reshape(-1)
         resized.append(m)
 
+    if not resized:
+        return torch.zeros((0, spatial_tokens * temporal_tokens), dtype=torch.bool)
     stacked = torch.stack(resized, dim=0)
     return stacked > float(threshold)
 
 
-def _slot_strengths_to_token_strengths(masks: torch.Tensor, slot_strengths: torch.Tensor, default_strength: float) -> torch.Tensor:
-    strengths = torch.zeros(masks.shape[1], device=masks.device, dtype=slot_strengths.dtype)
-    for slot_idx in range(masks.shape[0]):
-        strengths = torch.maximum(strengths, masks[slot_idx].to(slot_strengths.dtype) * slot_strengths[slot_idx])
-    return torch.maximum(strengths, torch.full_like(strengths, float(default_strength)))
-
-
 def _build_flux_cross_attention_bias(
-    masks: torch.Tensor,
+    region_masks: torch.Tensor,
     text_lengths: list[int],
     base_mode: str,
+    base_strength: float,
+    mask_strength: float,
     device: torch.device,
     dtype: torch.dtype,
-    mask_strength: float = 1.0,
-    slot_strengths: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    N, S_latent = masks.shape
+    num_regions, S_latent = region_masks.shape
     S_total = sum(text_lengths)
 
-    if mask_strength <= 0.0:
+    if mask_strength <= 0.0 and base_strength >= 1.0:
         return torch.zeros((1, 1, S_latent, S_total), device=device, dtype=dtype)
 
-    masks = masks.to(device=device)
-    allowed = torch.zeros((S_latent, S_total), device=device, dtype=torch.bool)
-    slot_strengths = slot_strengths.to(device=device, dtype=dtype).clamp(0.0, 1.0) if slot_strengths is not None else torch.ones(N, device=device, dtype=dtype)
+    region_masks = region_masks.to(device=device)
+    bias_2d = torch.zeros((S_latent, S_total), device=device, dtype=dtype)
 
+    S_background = text_lengths[0]
     offsets = [0]
-    for l in text_lengths[:-1]: offsets.append(offsets[-1] + l)
+    for l in text_lengths[:-1]:
+        offsets.append(offsets[-1] + l)
 
-    for slot_idx in range(N):
-        start = offsets[slot_idx]
-        end = start + text_lengths[slot_idx]
-        if start == end: continue
+    in_any_region = region_masks.any(dim=0) if num_regions > 0 else torch.zeros(S_latent, device=device, dtype=torch.bool)
 
-        if slot_idx == 0 and base_mode == "global":
-            allowed[:, start:end] = True
-        elif slot_idx == 0 and base_mode == "disabled":
+    # 1. Base prompt tokens (Slot 0)
+    if S_background > 0:
+        if base_mode == "disabled":
+            bias_2d[:, :S_background] = float("-inf")
+        elif base_mode == "background":
+            bias_2d[in_any_region, :S_background] = float("-inf")
+        else:  # "global"
+            if base_strength <= 0.0:
+                bias_2d[in_any_region, :S_background] = float("-inf")
+            elif base_strength < 1.0:
+                base_penalty = (1.0 - float(base_strength)) * -6.0
+                bias_2d[in_any_region, :S_background] = base_penalty
+
+    # 2. Regional prompt tokens (Slots 1..N)
+    cross_penalty = float("-inf") if mask_strength >= 1.0 else -12.0 * float(mask_strength)
+    for r_idx in range(num_regions):
+        start = offsets[r_idx + 1]
+        end = start + text_lengths[r_idx + 1]
+        if start == end:
             continue
-        else:
-            positions = masks[slot_idx].nonzero(as_tuple=True)[0]
-            if positions.numel() > 0:
-                allowed[positions, start:end] = True
+        is_outside_region = ~region_masks[r_idx]
+        bias_2d[is_outside_region, start:end] = cross_penalty
 
-    fully_blocked = ~allowed.any(dim=-1)
-    if fully_blocked.any() and text_lengths[0] > 0:
-        allowed[fully_blocked, :text_lengths[0]] = True
-
-    token_strengths = _slot_strengths_to_token_strengths(masks, slot_strengths * float(mask_strength), default_strength=0.0)
-    row_penalties = -12.0 * token_strengths
-    bias_2d = torch.where(allowed, torch.zeros((S_latent, S_total), device=device, dtype=dtype), row_penalties[:, None].expand(-1, S_total))
-    hard_rows = token_strengths >= 1.0
-    if hard_rows.any():
-        bias_2d[hard_rows[:, None].expand(-1, S_total) & ~allowed] = float("-inf")
+    fully_blocked = (bias_2d == float("-inf")).all(dim=-1)
+    if fully_blocked.any() and S_background > 0:
+        bias_2d[fully_blocked, :S_background] = 0.0
 
     return bias_2d.unsqueeze(0).unsqueeze(0)
 
 
 def _build_flux_self_attention_bias(
-    masks: torch.Tensor,
-    base_mode: str,
+    region_masks: torch.Tensor,
     mask_strength: float,
     device: torch.device,
     dtype: torch.dtype,
-    slot_strengths: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    N, S_latent = masks.shape
-    if mask_strength <= 0.0:
+    num_regions, S_latent = region_masks.shape
+    if mask_strength <= 0.0 or num_regions <= 1:
         return torch.zeros((1, 1, S_latent, S_latent), device=device, dtype=dtype)
 
-    m = masks.to(device=device)
-    slot_strengths = slot_strengths.to(device=device, dtype=dtype).clamp(0.0, 1.0) if slot_strengths is not None else torch.ones(N, device=device, dtype=dtype)
-    allowed = torch.zeros((S_latent, S_latent), device=device, dtype=torch.bool)
+    m = region_masks.to(device=device)
+    allowed = torch.eye(S_latent, device=device, dtype=torch.bool)
 
-    for slot_idx in range(N):
-        if slot_idx == 0 and base_mode == "disabled": continue
+    for slot_idx in range(num_regions):
         slot = m[slot_idx]
         allowed |= slot[:, None] & slot[None, :]
 
-    if base_mode == "global": allowed[:] = True
-
-    union = torch.zeros(S_latent, device=device, dtype=torch.bool)
-    for slot_idx in range(1, N): union |= m[slot_idx]
-    if base_mode != "disabled": union |= m[0]
-    background = ~union
+    in_any_region = m.any(dim=0)
+    background = ~in_any_region
     allowed |= background[:, None] & background[None, :]
-    allowed |= torch.eye(S_latent, device=device, dtype=torch.bool)
 
-    token_strengths = _slot_strengths_to_token_strengths(m, slot_strengths * float(mask_strength), default_strength=0.0)
-    row_penalties = -12.0 * token_strengths
-    bias = torch.where(allowed, torch.zeros((S_latent, S_latent), device=device, dtype=dtype), row_penalties[:, None].expand(-1, S_latent))
-    hard_rows = token_strengths >= 1.0
-    if hard_rows.any():
-        bias[hard_rows[:, None].expand(-1, S_latent) & ~allowed] = float("-inf")
+    penalty = float("-inf") if mask_strength >= 1.0 else -12.0 * float(mask_strength)
+    bias = torch.where(
+        allowed,
+        torch.zeros((S_latent, S_latent), device=device, dtype=dtype),
+        torch.full((S_latent, S_latent), penalty, device=device, dtype=dtype)
+    )
     return bias.unsqueeze(0).unsqueeze(0)
 
 
@@ -206,6 +198,35 @@ def _masked_attn_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, transform
     bias = attn_bias.to(device=q.device, dtype=q.dtype) if attn_bias is not None else None
     out = F.scaled_dot_product_attention(q_b, k_b, v_b, attn_mask=bias)
     return out.permute(0, 2, 1, 3).reshape(B, Sq, H * D)
+
+# ---------------------------------------------------------------------------
+# Prompt Output Formatting & Scheduling Helpers
+# ---------------------------------------------------------------------------
+
+def _apply_conditioning_dropoff(final_pos: list, base_pos: list, dropoff: float) -> list:
+    dropoff = max(0.0, min(float(dropoff), 1.0))
+    if dropoff >= 1.0:
+        return final_pos
+    if dropoff <= 0.0:
+        return base_pos
+
+    out_scheduled = []
+    # Phase 1: 0.0 -> dropoff (Selected Prompt Mode: locks in multi-character interaction)
+    for t in final_pos:
+        d = t[1].copy()
+        d['start_percent'] = 0.0
+        d['end_percent'] = dropoff
+        out_scheduled.append([t[0], d])
+
+    # Phase 2: dropoff -> 1.0 (Clean Base Prompt: removes noise and refines sharp detail)
+    for t in base_pos:
+        d = t[1].copy()
+        d['start_percent'] = dropoff
+        d['end_percent'] = 1.0
+        out_scheduled.append([t[0], d])
+
+    return out_scheduled
+
 
 # ---------------------------------------------------------------------------
 # Anima Patch Class
@@ -227,7 +248,7 @@ class AnimaRegionalConditioningPatch:
     ):
         if not region_items: raise RuntimeError("At least one conditioning region is required.")
         self.base_mode = base_mode
-        self.base_strength = max(float(base_strength), 0.0)
+        self.base_strength = max(0.0, min(float(base_strength), 1.0))
         self.start_sigma = float(start_sigma)
         self.end_sigma = float(end_sigma)
         self.cross_mask_strength = max(0.0, min(float(cross_mask_strength), 1.0))
@@ -278,7 +299,7 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
 
     patch: Optional[AnimaRegionalConditioningPatch] = transformer_options.get(WRAPPER_KEY, None)
     if patch is None or not patch.is_active(transformer_options): return executor(*args, **kwargs)
-    if patch.base_ratio >= 1.0 or (patch.cross_mask_strength <= 0.0 and patch.self_mask_strength <= 0.0):
+    if patch.base_ratio >= 1.0 or (patch.cross_mask_strength <= 0.0 and patch.self_mask_strength <= 0.0 and patch.base_strength >= 1.0):
         return executor(*args, **kwargs)
 
     diffusion_model = executor.class_obj
@@ -294,7 +315,7 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
     context, _ = _normalize_context(raw_context)
 
     device, dtype = context.device, context.dtype
-    B_total, S_base = context.shape[0], context.shape[1]
+    B_total = context.shape[0]
 
     cond_or_unconds = transformer_options.get("cond_or_uncond", [])
     if not cond_or_unconds: return executor(*args, **kwargs)
@@ -312,17 +333,16 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
         else: rc = rc[:1].expand(batch_size, -1, -1)
         region_conds_batched.append(rc)
 
-    S_background = S_base
-    S_total = S_background + sum(region_lengths)
+    context_chunks = context.chunk(num_chunks, dim=0)
+    S_background = context_chunks[0].shape[1]
     text_lengths = [S_background] + region_lengths
 
-    context_chunks = context.chunk(num_chunks, dim=0)
     unified_chunks: list[torch.Tensor] = []
     for chunk, cond_or_uncond in zip(context_chunks, cond_or_unconds):
         if cond_or_uncond == 1:
             uncond_base = _match_context_length(chunk, S_background)
-            pad = torch.zeros(batch_size, S_total - S_background, context.shape[2], device=device, dtype=dtype)
-            unified_chunks.append(torch.cat([uncond_base, pad], dim=1))
+            uncond_regions = [_match_context_length(chunk, r_len) for r_len in region_lengths]
+            unified_chunks.append(torch.cat([uncond_base] + uncond_regions, dim=1))
         else:
             base_chunk = _match_context_length(chunk, S_background)
             unified_chunks.append(torch.cat([base_chunk] + region_conds_batched, dim=1))
@@ -331,35 +351,24 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
 
     padded_t = math.ceil(latent_t / patch_temporal) * patch_temporal
     temporal_tokens = padded_t // patch_temporal
-    padded_h, padded_w = math.ceil(latent_h / patch_spatial) * patch_spatial, math.ceil(latent_w / patch_spatial) * patch_spatial
+    region_token_masks = _masks_to_token_masks(patch.region_masks, latent_h, latent_w, patch_spatial, temporal_tokens)
 
-    region_masks_at_latent = [F.interpolate(rm.unsqueeze(0).unsqueeze(0), size=(padded_h, padded_w), mode="nearest-exact").squeeze() for rm in patch.region_masks]
-
-    if patch.base_mode == "global":
-        base_mask = torch.ones(padded_h, padded_w)
-    elif patch.base_mode == "disabled":
-        base_mask = torch.zeros(padded_h, padded_w)
-    else:
-        base_mask = torch.ones(padded_h, padded_w)
-        for rm in region_masks_at_latent: base_mask = (base_mask - rm).clamp(min=0.0)
-
-    base_mask = base_mask * patch.base_strength
-    all_masks = [base_mask] + patch.region_masks
-    token_masks = _masks_to_token_masks(all_masks, latent_h, latent_w, patch_spatial, temporal_tokens)
-    slot_strengths = torch.tensor([patch.base_strength] + patch.region_weights, device=device, dtype=dtype).clamp(0.0, 1.0)
-
-    cond_bias = _build_flux_cross_attention_bias(token_masks, text_lengths, patch.base_mode, device, dtype, mask_strength=patch.cross_mask_strength, slot_strengths=slot_strengths)
-    uncond_bias = torch.full((1, 1, cond_bias.shape[2], S_total), float("-inf"), device=device, dtype=dtype)
-    uncond_bias[:, :, :, :S_background] = 0.0
-
-    bias_parts = [uncond_bias.expand(batch_size, -1, -1, -1) if c == 1 else cond_bias.expand(batch_size, -1, -1, -1) for c in cond_or_unconds]
+    cond_bias = _build_flux_cross_attention_bias(
+        region_token_masks,
+        text_lengths,
+        patch.base_mode,
+        patch.base_strength,
+        patch.cross_mask_strength,
+        device,
+        dtype,
+    )
+    bias_parts = [cond_bias.expand(batch_size, -1, -1, -1) for _ in cond_or_unconds]
     full_bias = torch.cat(bias_parts, dim=0)
 
     full_self_bias = None
     if patch.self_mask_strength > 0.0:
-        cond_self_bias = _build_flux_self_attention_bias(token_masks, patch.base_mode, patch.self_mask_strength, device, dtype, slot_strengths=slot_strengths)
-        uncond_self_bias = torch.zeros_like(cond_self_bias)
-        self_parts = [uncond_self_bias.expand(batch_size, -1, -1, -1) if c == 1 else cond_self_bias.expand(batch_size, -1, -1, -1) for c in cond_or_unconds]
+        cond_self_bias = _build_flux_self_attention_bias(region_token_masks, patch.self_mask_strength, device, dtype)
+        self_parts = [cond_self_bias.expand(batch_size, -1, -1, -1) for _ in cond_or_unconds]
         full_self_bias = torch.cat(self_parts, dim=0)
 
     base_output = executor(*args, **kwargs) if patch.base_ratio > 0.0 else None
@@ -396,24 +405,51 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
             attn.attn_op = original_op
 
 # ---------------------------------------------------------------------------
-# Moon Custom Node
+# Moon Custom Nodes
 # ---------------------------------------------------------------------------
 
 class MoonAnimaRegionalPatcher:
+    """Standard Node: Accepts pre-encoded CONDITIONING lists."""
     @classmethod
     def INPUT_TYPES(s):
         return {
             "required": {
-                "model": ("MODEL",),
-                "mask_list": ("MASK",),
-                "positive_list": ("CONDITIONING",),
-                "negative_list": ("CONDITIONING",),
-                "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "base_strength": ("FLOAT", {"default": 0.20, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "cross_mask_strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "self_mask_strength": ("FLOAT", {"default": 0.20, "min": 0.0, "max": 1.0, "step": 0.01}),
-                "base_ratio": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+                "model": ("MODEL", {
+                    "tooltip": "The Anima diffusion model to patch with regional conditioning."
+                }),
+                "mask_list": ("MASK", {
+                    "tooltip": "List of spatial masks corresponding to regional prompt zones (Zone 0, Zone 1, ...)."
+                }),
+                "positive_list": ("CONDITIONING", {
+                    "tooltip": "List of positive conditionings: prompt 0 is base/global, prompts 1..N correspond to regions 0..N-1."
+                }),
+                "negative_list": ("CONDITIONING", {
+                    "tooltip": "Negative conditioning applied across the generation."
+                }),
+                "start_percent": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning starts being applied."
+                }),
+                "end_percent": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning stops being applied."
+                }),
+                "base_strength": ("FLOAT", {
+                    "default": 0.80, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "How much the global base prompt affects regional zones. Higher values blend more shared style/lighting into regions; lower values isolate the regional prompt."
+                }),
+                "cross_mask_strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Cross-attention isolation between distinct regions (Zone A vs Zone B). 1.0 blocks bleed-through; lower values allow soft cross-regional influence."
+                }),
+                "self_mask_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Spatial self-attention isolation between regions. 0.0 maintains global scene coherence (shared lighting, perspective); higher values isolate spatial patches."
+                }),
+                "base_ratio": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Direct blend ratio with the un-partitioned base generation. 0.0 is pure regional output. Values > 0 blend in the global base image (runs the model twice per step)."
+                }),
             }
         }
 
@@ -459,7 +495,6 @@ class MoonAnimaRegionalPatcher:
                 masks = torch.zeros((1, 512, 512), dtype=torch.float32)
 
         num_masks = masks.shape[0]
-
         base_pos = positive_list[0] if len(positive_list) > 0 and positive_list[0] is not None else None
         base_neg = negative_list[0] if len(negative_list) > 0 and negative_list[0] is not None else None
 
@@ -503,3 +538,217 @@ class MoonAnimaRegionalPatcher:
         patched_model.set_attachments(WRAPPER_KEY, patch)
 
         return (patched_model, base_pos, base_neg)
+
+
+class MoonAnimaRegionalPatcherAdvanced:
+    """Advanced Node: Accepts CLIP and raw prompt texts separated by BREAK with Conditioning Dropoff scheduling."""
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "model": ("MODEL", {
+                    "tooltip": "The Anima diffusion model to patch with regional conditioning."
+                }),
+                "clip": ("CLIP", {
+                    "tooltip": "The CLIP / Qwen text encoder used to tokenize and encode prompts."
+                }),
+                "mask_list": ("MASK", {
+                    "tooltip": "List of spatial masks corresponding to regional prompt zones (Zone 0, Zone 1, ...)."
+                }),
+                "positive_text": ("STRING", {
+                    "multiline": True,
+                    "default": "duo, outdoors, oil painting\nBREAK\nanthro lynx\nBREAK\nanthro tiger",
+                    "tooltip": "Multi-line prompt. Use 'BREAK' on its own line or between phrases to separate the base prompt from regional prompts."
+                }),
+                "negative_text": ("STRING", {
+                    "multiline": True,
+                    "default": "low quality, blurry, deformed",
+                    "tooltip": "Negative prompt applied across the generation."
+                }),
+                "prompt_mode": ([
+                    "base_only",
+                    "concat_text",
+                    "concat_conditioning",
+                    "merge_average",
+                    "comfy_area_conditioning"
+                ], {
+                    "default": "base_only",
+                    "tooltip": "- base_only: passes only prompt 0 (base) to POSITIVE output.\n- concat_text: replaces BREAK with a newline for a single natural language encoding pass.\n- concat_conditioning: concatenates individual conditioning tensors.\n- merge_average: blends/averages all conditionings into a single embedding.\n- comfy_area_conditioning: outputs standard ComfyUI area-conditioning list with spatial masks attached."
+                }),
+                "conditioning_dropoff": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "At what point in generation (0.0 to 1.0) the prompt switches to 'base_only'. Default 1.0 uses the selected mode all the way through. Setting to e.g. 0.40–0.60 uses concatenated/merged conditioning for early poses/composition, then drops off to clean base conditioning to eliminate noise and refine sharp details."
+                }),
+                "start_percent": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning starts being applied."
+                }),
+                "end_percent": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning stops being applied."
+                }),
+                "base_strength": ("FLOAT", {
+                    "default": 0.80, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "How much the global base prompt affects regional zones. Higher values blend more shared style/lighting into regions; lower values isolate the regional prompt."
+                }),
+                "cross_mask_strength": ("FLOAT", {
+                    "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Cross-attention isolation between distinct regions (Zone A vs Zone B). 1.0 blocks bleed-through; lower values allow soft cross-regional influence."
+                }),
+                "self_mask_strength": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Spatial self-attention isolation between regions. 0.0 maintains global scene coherence (shared lighting, perspective); higher values isolate spatial patches."
+                }),
+                "base_ratio": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Direct blend ratio with the un-partitioned base generation. 0.0 is pure regional output. Values > 0 blend in the global base image (runs the model twice per step)."
+                }),
+            }
+        }
+
+    RETURN_TYPES = ("MODEL", "CONDITIONING", "CONDITIONING")
+    RETURN_NAMES = ("patched_model", "POSITIVE", "NEGATIVE")
+    INPUT_IS_LIST = True
+    FUNCTION = "apply_advanced"
+    CATEGORY = "MoonNodes"
+
+    def apply_advanced(self, model, clip, mask_list, positive_text, negative_text,
+                       prompt_mode, conditioning_dropoff, start_percent, end_percent,
+                       base_strength, cross_mask_strength, self_mask_strength, base_ratio):
+
+        model_obj = model[0]
+        clip_obj = clip[0]
+        pos_text_raw = positive_text[0] if isinstance(positive_text, list) else positive_text
+        neg_text_raw = negative_text[0] if isinstance(negative_text, list) else negative_text
+        mode_val = prompt_mode[0] if isinstance(prompt_mode, list) else prompt_mode
+        dropoff_val = conditioning_dropoff[0] if isinstance(conditioning_dropoff, list) else conditioning_dropoff
+        start_pct = start_percent[0]
+        end_pct = end_percent[0]
+        base_str = base_strength[0]
+        cross_str = cross_mask_strength[0]
+        self_str = self_mask_strength[0]
+        ratio_val = base_ratio[0]
+        base_mode_val = "global"
+
+        # 1. Parse and encode positive text parts
+        parts = [p.strip() for p in pos_text_raw.split("BREAK") if p.strip()]
+        if not parts:
+            parts = [""]
+
+        encoder = CLIPTextEncode()
+        positive_list = [encoder.encode(clip_obj, part)[0] for part in parts]
+        negative_cond = encoder.encode(clip_obj, neg_text_raw)[0]
+
+        # 2. Process masks
+        if len(mask_list) == 1 and mask_list[0].ndim == 3 and mask_list[0].shape[0] > 1:
+            masks = mask_list[0]
+        else:
+            cleaned_masks = []
+            for m in mask_list:
+                if m.ndim == 3: cleaned_masks.extend(list(m))
+                elif m.ndim == 2: cleaned_masks.append(m)
+
+            if cleaned_masks:
+                target_shape = cleaned_masks[0].shape[-2:]
+                aligned_masks = []
+                for m in cleaned_masks:
+                    if m.shape[-2:] != target_shape:
+                        m_4d = m.unsqueeze(0).unsqueeze(0)
+                        m_4d = F.interpolate(m_4d, size=target_shape, mode="nearest")
+                        aligned_masks.append(m_4d.squeeze())
+                    else:
+                        aligned_masks.append(m)
+                masks = torch.stack(aligned_masks, dim=0)
+            else:
+                masks = torch.zeros((1, 512, 512), dtype=torch.float32)
+
+        num_masks = masks.shape[0]
+        base_pos = positive_list[0]
+
+        # 3. Build regional conditioning items for the model patch
+        region_items = []
+        for i in range(num_masks):
+            cond_idx = i + 1
+            if cond_idx < len(positive_list) and positive_list[cond_idx] is not None:
+                region_items.append(MoonAnimaRegionItem(mask=masks[i], conditioning=positive_list[cond_idx], weight=1.0))
+
+        # 4. Construct base mode conditioning for POSITIVE port
+        if mode_val == "concat_text":
+            combined_text = re.sub(r'\s*\bBREAK\b\s*', '\n', pos_text_raw).strip()
+            mode_pos = encoder.encode(clip_obj, combined_text)[0]
+        elif mode_val == "comfy_area_conditioning":
+            base_cond, base_meta = _extract_conditioning_parts(base_pos, "base_pos")
+            mode_pos = [[base_cond, base_meta.copy()]]
+            for idx, reg in enumerate(region_items):
+                reg_cond, reg_meta = _extract_conditioning_parts(reg.conditioning, f"region_{idx}")
+                meta = reg_meta.copy()
+                mask_tensor = reg.mask
+                while mask_tensor.ndim > 2: mask_tensor = mask_tensor[0]
+                meta["mask"] = mask_tensor.unsqueeze(0)
+                meta["mask_strength"] = reg.weight
+                meta["set_area_to_bounds"] = False
+                mode_pos.append([reg_cond, meta])
+        elif mode_val == "concat_conditioning":
+            all_conds, all_t5_ids, all_t5_weights = [], [], []
+            base_cond, base_meta = _extract_conditioning_parts(base_pos, "base_pos")
+            meta = base_meta.copy()
+            for p in positive_list:
+                c, m = _extract_conditioning_parts(p, "positive_item")
+                all_conds.append(c)
+                if "t5xxl_ids" in m and torch.is_tensor(m["t5xxl_ids"]):
+                    all_t5_ids.append(m["t5xxl_ids"].flatten())
+                if "t5xxl_weights" in m and torch.is_tensor(m["t5xxl_weights"]):
+                    all_t5_weights.append(m["t5xxl_weights"].flatten())
+            concat_cond = torch.cat(all_conds, dim=1)
+            if all_t5_ids: meta["t5xxl_ids"] = torch.cat(all_t5_ids, dim=0)
+            if all_t5_weights: meta["t5xxl_weights"] = torch.cat(all_t5_weights, dim=0)
+            mode_pos = [[concat_cond, meta]]
+        elif mode_val == "merge_average":
+            all_conds = []
+            base_cond, base_meta = _extract_conditioning_parts(base_pos, "base_pos")
+            meta = base_meta.copy()
+            for p in positive_list:
+                c, _ = _extract_conditioning_parts(p, "positive_item")
+                all_conds.append(c)
+            max_len = max(c.shape[1] for c in all_conds)
+            padded = [_match_context_length(c, max_len) for c in all_conds]
+            avg_cond = torch.stack(padded, dim=0).mean(dim=0)
+            mode_pos = [[avg_cond, meta]]
+        else:  # "base_only"
+            mode_pos = base_pos
+
+        # 5. Apply Conditioning Dropoff schedule
+        final_pos = _apply_conditioning_dropoff(mode_pos, base_pos, dropoff_val)
+
+        if not region_items:
+            return (model_obj, final_pos, negative_cond)
+
+        # 6. Apply the DiT cross-attention patch to the model
+        model_sampling = model_obj.get_model_object("model_sampling")
+        start_sigma = float(model_sampling.percent_to_sigma(start_pct))
+        end_sigma = float(model_sampling.percent_to_sigma(end_pct))
+
+        patch = AnimaRegionalConditioningPatch(
+            region_items=region_items,
+            base_mode=base_mode_val,
+            base_strength=base_str,
+            start_sigma=start_sigma,
+            end_sigma=end_sigma,
+            cross_mask_strength=cross_str,
+            self_mask_strength=self_str,
+            base_ratio=ratio_val
+        )
+
+        patched_model = model_obj.clone()
+        patched_model.remove_wrappers_with_key(
+            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL, WRAPPER_KEY
+        )
+        patched_model.add_wrapper_with_key(
+            comfy.patcher_extension.WrappersMP.DIFFUSION_MODEL,
+            WRAPPER_KEY,
+            _diffusion_model_wrapper,
+        )
+        patched_model.model_options.setdefault("transformer_options", {})[WRAPPER_KEY] = patch
+        patched_model.set_attachments(WRAPPER_KEY, patch)
+
+        return (patched_model, final_pos, negative_cond)

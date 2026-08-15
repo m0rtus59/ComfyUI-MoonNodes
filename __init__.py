@@ -6,7 +6,7 @@ from .py.nodes.moon_mask_maker_gui import *
 from .py.nodes.markdown_output import *
 from .py.nodes.multipass_sampler import *
 from .py.nodes.LLM_input import *
-from .py.nodes.anima_regional import MoonAnimaRegionalPatcher
+from .py.nodes.anima_regional import MoonAnimaRegionalPatcher, MoonAnimaRegionalPatcherAdvanced
 from .py.nodes.moon_wildcards import MoonSimpleWildcards
 from .py.nodes.moon_segs_to_indexed_masks import MoonSEGSToIndexedMasks
 
@@ -25,6 +25,7 @@ NODE_CLASS_MAPPINGS = {
     "MoonAnimaRegionalPatcher": MoonAnimaRegionalPatcher,
     "MoonSimpleWildcards": MoonSimpleWildcards,
     "MoonSEGSToIndexedMasks": MoonSEGSToIndexedMasks,
+    "MoonAnimaRegionalPatcherAdvanced": MoonAnimaRegionalPatcherAdvanced,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -42,6 +43,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonAnimaRegionalPatcher": "🌗 Moon Anima Regional Patcher",
     "MoonSimpleWildcards": "🎲 Moon Simple Wildcards",
     "MoonSEGSToIndexedMasks": "🌗 Moon SEGS to Indexed Mask List",
+    "MoonAnimaRegionalPatcherAdvanced": "🌗 Moon Anima Regional Patcher (Advanced)",
 }
 
 WEB_DIRECTORY = "js"
