@@ -16,6 +16,25 @@ def base64_to_image(b64_str, mode="L"):
     img_data = base64.b64decode(b64_str)
     return Image.open(BytesIO(img_data)).convert(mode)
 
+
+def image_to_tensor(img):
+    image_np = np.asarray(img.convert("RGB"), dtype=np.float32) / 255.0
+    return torch.from_numpy(image_np).unsqueeze(0)
+
+
+def load_embedded_or_input_image(value, input_dir, mode):
+    if not isinstance(value, str) or not value:
+        return None
+    if value.startswith("data:image"):
+        return base64_to_image(value, mode=mode)
+
+    if os.path.basename(value) != value:
+        return None
+    filepath = os.path.join(input_dir, value)
+    if os.path.isfile(filepath):
+        return Image.open(filepath).convert(mode)
+    return None
+
 @PromptServer.instance.routes.post("/moon/save_masks")
 async def save_masks(request):
     post = await request.json()
@@ -29,6 +48,14 @@ async def save_masks(request):
     raw_layers = post.get("raw_layers", [])   
     settings = post.get("settings", [])       
     preview_b64 = post.get("preview", "")
+    try:
+        canvas_width = int(post.get("canvas_width", 512))
+        canvas_height = int(post.get("canvas_height", 512))
+    except (TypeError, ValueError):
+        return web.json_response({"error": "Canvas dimensions must be integers."}, status=400)
+
+    if not (64 <= canvas_width <= 4096 and 64 <= canvas_height <= 4096):
+        return web.json_response({"error": "Canvas dimensions must be between 64 and 4096 pixels."}, status=400)
     
     input_dir = folder_paths.get_input_directory()
     filenames = []
@@ -65,7 +92,10 @@ async def save_masks(request):
         "computed": filenames,
         "raw": raw_filenames,
         "settings": settings,
-        "preview": preview_filename
+        "preview": preview_filename,
+        "composite": preview_filename,
+        "canvas_width": canvas_width,
+        "canvas_height": canvas_height,
     })
 
 
@@ -81,9 +111,10 @@ class MoonMaskMakerGUI:
             }
         }
 
-    RETURN_TYPES = ("MASK",)
+    RETURN_TYPES = ("MASK", "IMAGE", "INT", "INT")
+    RETURN_NAMES = ("masks", "composite", "width", "height")
     FUNCTION = "load_masks"
-    OUTPUT_IS_LIST = (True,)
+    OUTPUT_IS_LIST = (True, False, False, False)
     CATEGORY = "MoonNodes"
     OUTPUT_NODE = True 
 
@@ -93,37 +124,53 @@ class MoonMaskMakerGUI:
 
     def load_masks(self, mask_names, unique_id):
         input_dir = folder_paths.get_input_directory()
-        
+
         try:
             data = json.loads(mask_names)
             items = data.get("computed", []) if isinstance(data, dict) else data
-            preview_data = data.get("preview", "") if isinstance(data, dict) else ""
+            composite_data = data.get("composite", data.get("preview", "")) if isinstance(data, dict) else ""
+            declared_width = data.get("canvas_width") if isinstance(data, dict) else None
+            declared_height = data.get("canvas_height") if isinstance(data, dict) else None
         except Exception:
             items = []
-            preview_data = ""
-            
-        mask_tensors = []
-        
+            composite_data = ""
+            declared_width = None
+            declared_height = None
+
+        mask_images = []
         for item in items:
-            if isinstance(item, str) and item.startswith("data:image"):
-                img = base64_to_image(item, mode="L")
-                mask_np = np.array(img, dtype=np.float32) / 255.0
-                mask_tensor = torch.from_numpy(mask_np)
-                mask_tensors.append(mask_tensor)
-            elif isinstance(item, str):
-                filepath = os.path.join(input_dir, item)
-                if os.path.exists(filepath):
-                    img = Image.open(filepath).convert("L")
-                    mask_np = np.array(img, dtype=np.float32) / 255.0
-                    mask_tensor = torch.from_numpy(mask_np)
-                    mask_tensors.append(mask_tensor)
+            img = load_embedded_or_input_image(item, input_dir, "L")
+            if img is not None:
+                mask_images.append(img)
+
+        composite_img = load_embedded_or_input_image(composite_data, input_dir, "RGB")
+
+        try:
+            target_size = (int(declared_width), int(declared_height))
+        except (TypeError, ValueError):
+            if mask_images:
+                target_size = mask_images[0].size
+            elif composite_img is not None:
+                target_size = composite_img.size
+            else:
+                target_size = (512, 512)
+
+        if not all(64 <= dimension <= 4096 for dimension in target_size):
+            raise ValueError("Canvas dimensions must be between 64 and 4096 pixels.")
+
+        mask_tensors = []
+        for img in mask_images:
+            if img.size != target_size:
+                img = img.resize(target_size, Image.Resampling.NEAREST)
+            mask_np = np.asarray(img, dtype=np.float32) / 255.0
+            mask_tensors.append(torch.from_numpy(mask_np))
 
         preview_filename = f"moon_mask_preview_{unique_id}.png"
         preview_filepath = os.path.join(input_dir, preview_filename)
         
-        if preview_data and preview_data.startswith("data:image") and not os.path.exists(preview_filepath):
+        if composite_data and composite_data.startswith("data:image"):
             try:
-                p_img = base64_to_image(preview_data, mode="RGB")
+                p_img = base64_to_image(composite_data, mode="RGB")
                 p_img.save(preview_filepath)
             except Exception:
                 pass
@@ -132,24 +179,20 @@ class MoonMaskMakerGUI:
         if os.path.exists(preview_filepath):
             ui_images = [{"filename": preview_filename, "type": "input", "subfolder": ""}]
 
+        if composite_img is None:
+            composite_img = Image.new("RGB", target_size, color=(0, 0, 0))
+        elif composite_img.size != target_size:
+            composite_img = composite_img.resize(target_size, Image.Resampling.NEAREST)
+
         if not mask_tensors:
-            return {
-                "ui": {"images": ui_images},
-                "result": (torch.zeros((1, 512, 512), dtype=torch.float32),)
-            }
-            
-        # Ensure all mask tensors match target spatial dimensions
-        target_shape = mask_tensors[0].shape[-2:]
-        aligned_tensors = []
-        for m in mask_tensors:
-            if m.shape[-2:] != target_shape:
-                m_4d = m.unsqueeze(0).unsqueeze(0)
-                m_4d = torch.nn.functional.interpolate(m_4d, size=target_shape, mode="nearest")
-                aligned_tensors.append(m_4d.squeeze())
-            else:
-                aligned_tensors.append(m)
+            mask_tensors = [torch.zeros((target_size[1], target_size[0]), dtype=torch.float32)]
 
         return {
             "ui": {"images": ui_images},
-            "result": (torch.stack(aligned_tensors, dim=0),)
+            "result": (
+                torch.stack(mask_tensors, dim=0),
+                image_to_tensor(composite_img),
+                target_size[0],
+                target_size[1],
+            )
         }

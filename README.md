@@ -61,10 +61,14 @@ A quick, string-based mask generator. You can define prompt zones just by typing
 
 ### 4. **Moon Mask Maker GUI**
 An interactive, pop-up drawing workspace directly inside the node.
-* **Usage:** Right-click the node and select **"Open Painting GUI..."** to open the canvas.
+* **Usage:** Click **Edit Masks** on the node, or right-click it and select **Edit Masks...**, to open the canvas.
+* **Reference Image:** Load an image into the editor as a non-destructive underlay. Adjust its opacity and choose `contain`, `cover`, or `stretch`; **Use Reference Size** changes the canvas to the image's native aspect ratio.
+* **Arbitrary Canvas Size:** Set width and height independently inside the editor. The editor preserves the selected aspect ratio while fitting the drawing surface into the dialog. The node exposes matching `width` and `height` outputs so downstream latent nodes use the same dimensions.
 * **Layer System:** Supports adding multiple distinct layers, with non-active layers shown semi-transparently so you can align your boundaries.
-* **Non-Destructive Exclusion:** Features an `Allow Overlap` toggle. When disabled, layers automatically subtract from layers beneath them upon saving, while keeping your original shapes editable in the GUI.
+* **Non-Destructive Exclusion:** Enable `subtract` on an upper layer to remove its occupied area from the layers beneath it when saving, while keeping the original strokes editable in the GUI.
 * **Node Preview:** Displays a real-time, multi-colored preview of your layout directly on the node in your ComfyUI workspace.
+* **Outputs:** In addition to the indexed `MASK` list, the node outputs the colored mask composition as an `IMAGE` and the authoritative canvas `width` / `height` as integers. The reference image is deliberately excluded from the composite. Select a black or white composite background in the editor; white is convenient for Regional ControlNet conditioning.
+* **Downstream sizing:** Connect the `width` and `height` outputs to the latent-size node used by the workflow. The editor is the single source of truth for canvas dimensions; it intentionally has no external width/height inputs that could override the drawing at execution time.
 * **Controls:** 
   * *Left Click + Drag:* Draw mask.
   * *Right Click + Drag:* Erase mask.
