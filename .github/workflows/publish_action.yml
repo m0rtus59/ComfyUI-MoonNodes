@@ -13,7 +13,7 @@ jobs:
     name: Publish Custom Node to registry
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Required to create tags and releases
+      contents: write
 
     steps:
       - name: Check out code
@@ -24,12 +24,12 @@ jobs:
         with:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
 
-      # 1. Safely read version string from pyproject.toml
-- name: Extract Version
-  id: get_version
-  run: |
-    VERSION=$(grep -m 1 'version' pyproject.toml | cut -d '"' -f 2)
-    echo "VERSION=$VERSION" >> $GITHUB_ENV
+      # 1. Read version string from pyproject.toml
+      - name: Extract Version
+        id: get_version
+        run: |
+          VERSION=$(grep -m 1 'version' pyproject.toml | cut -d '"' -f 2)
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       # 2. Automatically create Git Tag & GitHub Release
       - name: Create GitHub Release
