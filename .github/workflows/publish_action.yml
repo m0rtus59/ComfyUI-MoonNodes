@@ -25,11 +25,11 @@ jobs:
           personal_access_token: ${{ secrets.REGISTRY_ACCESS_TOKEN }}
 
       # 1. Safely read version string from pyproject.toml
-      - name: Extract Version
-        id: get_version
-        run: |
-          VERSION=$(python3 -c 'import tomllib; f = open("pyproject.toml", "rb"); print(tomllib.load(f)["project"]["version"])')
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
+- name: Extract Version
+  id: get_version
+  run: |
+    VERSION=$(grep -m 1 'version' pyproject.toml | cut -d '"' -f 2)
+    echo "VERSION=$VERSION" >> $GITHUB_ENV
 
       # 2. Automatically create Git Tag & GitHub Release
       - name: Create GitHub Release
