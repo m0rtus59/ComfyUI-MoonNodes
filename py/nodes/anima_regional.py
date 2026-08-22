@@ -108,7 +108,6 @@ def _masks_to_token_masks(
 def _build_flux_cross_attention_bias(
     region_masks: torch.Tensor,
     text_lengths: list[int],
-    base_mode: str,
     base_strength: float,
     mask_strength: float,
     device: torch.device,
@@ -132,16 +131,11 @@ def _build_flux_cross_attention_bias(
 
     # 1. Base prompt tokens (Slot 0)
     if S_background > 0:
-        if base_mode == "disabled":
-            bias_2d[:, :S_background] = float("-inf")
-        elif base_mode == "background":
+        if base_strength <= 0.0:
             bias_2d[in_any_region, :S_background] = float("-inf")
-        else:  # "global"
-            if base_strength <= 0.0:
-                bias_2d[in_any_region, :S_background] = float("-inf")
-            elif base_strength < 1.0:
-                base_penalty = (1.0 - float(base_strength)) * -6.0
-                bias_2d[in_any_region, :S_background] = base_penalty
+        elif base_strength < 1.0:
+            base_penalty = (1.0 - float(base_strength)) * -6.0
+            bias_2d[in_any_region, :S_background] = base_penalty
 
     # 2. Regional prompt tokens (Slots 1..N)
     cross_penalty = float("-inf") if mask_strength >= 1.0 else -12.0 * float(mask_strength)
@@ -203,27 +197,39 @@ def _masked_attn_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, transform
 # Prompt Output Formatting & Scheduling Helpers
 # ---------------------------------------------------------------------------
 
-def _apply_conditioning_dropoff(final_pos: list, base_pos: list, dropoff: float) -> list:
+def _apply_conditioning_schedule(mode_pos: list, base_pos: list, start: float, dropoff: float) -> list:
+    start = max(0.0, min(float(start), 1.0))
     dropoff = max(0.0, min(float(dropoff), 1.0))
-    if dropoff >= 1.0:
-        return final_pos
-    if dropoff <= 0.0:
+
+    if start <= 0.0 and dropoff >= 1.0:
+        return mode_pos
+    if start >= dropoff:
         return base_pos
 
     out_scheduled = []
-    # Phase 1: 0.0 -> dropoff (Selected Prompt Mode: locks in multi-character interaction)
-    for t in final_pos:
+
+    # Phase 1: 0.0 -> start (Clean Base Prompt before regional mode begins)
+    if start > 0.0:
+        for t in base_pos:
+            d = t[1].copy()
+            d['start_percent'] = 0.0
+            d['end_percent'] = start
+            out_scheduled.append([t[0], d])
+
+    # Phase 2: start -> dropoff (Selected Prompt Mode Conditioning)
+    for t in mode_pos:
         d = t[1].copy()
-        d['start_percent'] = 0.0
+        d['start_percent'] = start
         d['end_percent'] = dropoff
         out_scheduled.append([t[0], d])
 
-    # Phase 2: dropoff -> 1.0 (Clean Base Prompt: removes noise and refines sharp detail)
-    for t in base_pos:
-        d = t[1].copy()
-        d['start_percent'] = dropoff
-        d['end_percent'] = 1.0
-        out_scheduled.append([t[0], d])
+    # Phase 3: dropoff -> 1.0 (Clean Base Prompt: removes noise and refines sharp detail)
+    if dropoff < 1.0:
+        for t in base_pos:
+            d = t[1].copy()
+            d['start_percent'] = dropoff
+            d['end_percent'] = 1.0
+            out_scheduled.append([t[0], d])
 
     return out_scheduled
 
@@ -236,7 +242,6 @@ class AnimaRegionalConditioningPatch:
     def __init__(
         self,
         region_items: list[MoonAnimaRegionItem],
-        base_mode: str,
         base_strength: float,
         start_sigma: float,
         end_sigma: float,
@@ -247,7 +252,6 @@ class AnimaRegionalConditioningPatch:
         self_inject_every_n_blocks: int = 1,
     ):
         if not region_items: raise RuntimeError("At least one conditioning region is required.")
-        self.base_mode = base_mode
         self.base_strength = max(0.0, min(float(base_strength), 1.0))
         self.start_sigma = float(start_sigma)
         self.end_sigma = float(end_sigma)
@@ -356,7 +360,6 @@ def _diffusion_model_wrapper(executor, *args, **kwargs):
     cond_bias = _build_flux_cross_attention_bias(
         region_token_masks,
         text_lengths,
-        patch.base_mode,
         patch.base_strength,
         patch.cross_mask_strength,
         device,
@@ -426,6 +429,10 @@ class MoonAnimaRegionalPatcher:
                 "negative_list": ("CONDITIONING", {
                     "tooltip": "Negative conditioning applied across the generation."
                 }),
+                "base_strength": ("FLOAT", {
+                    "default": 0.80, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "How much the global base prompt affects regional zones. Higher values blend more shared style/lighting into regions; lower values isolate the regional prompt."
+                }),
                 "start_percent": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
                     "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning starts being applied."
@@ -433,10 +440,6 @@ class MoonAnimaRegionalPatcher:
                 "end_percent": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                     "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning stops being applied."
-                }),
-                "base_strength": ("FLOAT", {
-                    "default": 0.80, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "How much the global base prompt affects regional zones. Higher values blend more shared style/lighting into regions; lower values isolate the regional prompt."
                 }),
                 "cross_mask_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
@@ -460,17 +463,16 @@ class MoonAnimaRegionalPatcher:
     CATEGORY = "MoonNodes"
 
     def apply(self, model, mask_list, positive_list, negative_list,
-              start_percent, end_percent, base_strength, cross_mask_strength,
+              base_strength, start_percent, end_percent, cross_mask_strength,
               self_mask_strength, base_ratio):
 
         model_obj = model[0]
+        base_str = base_strength[0]
         start_pct = start_percent[0]
         end_pct = end_percent[0]
-        base_str = base_strength[0]
         cross_str = cross_mask_strength[0]
         self_str = self_mask_strength[0]
         ratio_val = base_ratio[0]
-        base_mode_val = "global"
 
         if len(mask_list) == 1 and mask_list[0].ndim == 3 and mask_list[0].shape[0] > 1:
             masks = mask_list[0]
@@ -516,7 +518,6 @@ class MoonAnimaRegionalPatcher:
 
         patch = AnimaRegionalConditioningPatch(
             region_items=region_items,
-            base_mode=base_mode_val,
             base_strength=base_str,
             start_sigma=start_sigma,
             end_sigma=end_sigma,
@@ -575,9 +576,17 @@ class MoonAnimaRegionalPatcherAdvanced:
                     "default": "base_only",
                     "tooltip": "- base_only: passes only prompt 0 (base) to POSITIVE output.\n- concat_text: replaces BREAK with a newline for a single natural language encoding pass.\n- concat_conditioning: concatenates individual conditioning tensors.\n- merge_average: blends/averages all conditionings into a single embedding.\n- comfy_area_conditioning: outputs standard ComfyUI area-conditioning list with spatial masks attached."
                 }),
+                "conditioning_start_percent": ("FLOAT", {
+                    "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "Sampling percentage (0.0 to 1.0) when the selected prompt mode begins. Before this point, only the clean base prompt is applied."
+                }),
                 "conditioning_dropoff": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "At what point in generation (0.0 to 1.0) the prompt switches to 'base_only'. Default 1.0 uses the selected mode all the way through. Setting to e.g. 0.40–0.60 uses concatenated/merged conditioning for early poses/composition, then drops off to clean base conditioning to eliminate noise and refine sharp details."
+                    "tooltip": "At what point in generation (0.0 to 1.0) the prompt switches back to 'base_only'. Default 1.0 uses the selected mode all the way through. Setting to e.g. 0.40–0.60 uses concatenated/merged conditioning for early poses/composition, then drops off to clean base conditioning to eliminate noise and refine sharp details."
+                }),
+                "base_strength": ("FLOAT", {
+                    "default": 0.80, "min": 0.0, "max": 1.0, "step": 0.01,
+                    "tooltip": "How much the global base prompt affects regional zones. Higher values blend more shared style/lighting into regions; lower values isolate the regional prompt."
                 }),
                 "start_percent": ("FLOAT", {
                     "default": 0.0, "min": 0.0, "max": 1.0, "step": 0.01,
@@ -586,10 +595,6 @@ class MoonAnimaRegionalPatcherAdvanced:
                 "end_percent": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
                     "tooltip": "Sampling percentage (0.0–1.0) when regional conditioning stops being applied."
-                }),
-                "base_strength": ("FLOAT", {
-                    "default": 0.80, "min": 0.0, "max": 1.0, "step": 0.01,
-                    "tooltip": "How much the global base prompt affects regional zones. Higher values blend more shared style/lighting into regions; lower values isolate the regional prompt."
                 }),
                 "cross_mask_strength": ("FLOAT", {
                     "default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01,
@@ -613,22 +618,23 @@ class MoonAnimaRegionalPatcherAdvanced:
     CATEGORY = "MoonNodes"
 
     def apply_advanced(self, model, clip, mask_list, positive_text, negative_text,
-                       prompt_mode, conditioning_dropoff, start_percent, end_percent,
-                       base_strength, cross_mask_strength, self_mask_strength, base_ratio):
+                       prompt_mode, conditioning_start_percent, conditioning_dropoff,
+                       base_strength, start_percent, end_percent, cross_mask_strength,
+                       self_mask_strength, base_ratio):
 
         model_obj = model[0]
         clip_obj = clip[0]
         pos_text_raw = positive_text[0] if isinstance(positive_text, list) else positive_text
         neg_text_raw = negative_text[0] if isinstance(negative_text, list) else negative_text
         mode_val = prompt_mode[0] if isinstance(prompt_mode, list) else prompt_mode
+        cond_start_val = conditioning_start_percent[0] if isinstance(conditioning_start_percent, list) else conditioning_start_percent
         dropoff_val = conditioning_dropoff[0] if isinstance(conditioning_dropoff, list) else conditioning_dropoff
-        start_pct = start_percent[0]
-        end_pct = end_percent[0]
-        base_str = base_strength[0]
-        cross_str = cross_mask_strength[0]
-        self_str = self_mask_strength[0]
-        ratio_val = base_ratio[0]
-        base_mode_val = "global"
+        base_str = base_strength[0] if isinstance(base_strength, list) else base_strength
+        start_pct = start_percent[0] if isinstance(start_percent, list) else start_percent
+        end_pct = end_percent[0] if isinstance(end_percent, list) else end_percent
+        cross_str = cross_mask_strength[0] if isinstance(cross_mask_strength, list) else cross_mask_strength
+        self_str = self_mask_strength[0] if isinstance(self_mask_strength, list) else self_mask_strength
+        ratio_val = base_ratio[0] if isinstance(base_ratio, list) else base_ratio
 
         # 1. Parse and encode positive text parts
         parts = [p.strip() for p in pos_text_raw.split("BREAK") if p.strip()]
@@ -639,7 +645,7 @@ class MoonAnimaRegionalPatcherAdvanced:
         positive_list = [encoder.encode(clip_obj, part)[0] for part in parts]
         negative_cond = encoder.encode(clip_obj, neg_text_raw)[0]
 
-        # 2. Process masks
+        # 2. Process masks list (combines incoming mask links into a single (N, H, W) tensor)
         if len(mask_list) == 1 and mask_list[0].ndim == 3 and mask_list[0].shape[0] > 1:
             masks = mask_list[0]
         else:
@@ -672,10 +678,13 @@ class MoonAnimaRegionalPatcherAdvanced:
             if cond_idx < len(positive_list) and positive_list[cond_idx] is not None:
                 region_items.append(MoonAnimaRegionItem(mask=masks[i], conditioning=positive_list[cond_idx], weight=1.0))
 
-        # 4. Construct base mode conditioning for POSITIVE port
-        if mode_val == "concat_text":
+        # 4. Construct unified conditioning for POSITIVE port
+        if mode_val == "base_only":
+            final_pos = base_pos
+        elif mode_val == "concat_text":
             combined_text = re.sub(r'\s*\bBREAK\b\s*', '\n', pos_text_raw).strip()
             mode_pos = encoder.encode(clip_obj, combined_text)[0]
+            final_pos = _apply_conditioning_schedule(mode_pos, base_pos, cond_start_val, dropoff_val)
         elif mode_val == "comfy_area_conditioning":
             base_cond, base_meta = _extract_conditioning_parts(base_pos, "base_pos")
             mode_pos = [[base_cond, base_meta.copy()]]
@@ -688,6 +697,7 @@ class MoonAnimaRegionalPatcherAdvanced:
                 meta["mask_strength"] = reg.weight
                 meta["set_area_to_bounds"] = False
                 mode_pos.append([reg_cond, meta])
+            final_pos = _apply_conditioning_schedule(mode_pos, base_pos, cond_start_val, dropoff_val)
         elif mode_val == "concat_conditioning":
             all_conds, all_t5_ids, all_t5_weights = [], [], []
             base_cond, base_meta = _extract_conditioning_parts(base_pos, "base_pos")
@@ -703,6 +713,7 @@ class MoonAnimaRegionalPatcherAdvanced:
             if all_t5_ids: meta["t5xxl_ids"] = torch.cat(all_t5_ids, dim=0)
             if all_t5_weights: meta["t5xxl_weights"] = torch.cat(all_t5_weights, dim=0)
             mode_pos = [[concat_cond, meta]]
+            final_pos = _apply_conditioning_schedule(mode_pos, base_pos, cond_start_val, dropoff_val)
         elif mode_val == "merge_average":
             all_conds = []
             base_cond, base_meta = _extract_conditioning_parts(base_pos, "base_pos")
@@ -714,23 +725,20 @@ class MoonAnimaRegionalPatcherAdvanced:
             padded = [_match_context_length(c, max_len) for c in all_conds]
             avg_cond = torch.stack(padded, dim=0).mean(dim=0)
             mode_pos = [[avg_cond, meta]]
-        else:  # "base_only"
-            mode_pos = base_pos
-
-        # 5. Apply Conditioning Dropoff schedule
-        final_pos = _apply_conditioning_dropoff(mode_pos, base_pos, dropoff_val)
+            final_pos = _apply_conditioning_schedule(mode_pos, base_pos, cond_start_val, dropoff_val)
+        else:
+            final_pos = base_pos
 
         if not region_items:
             return (model_obj, final_pos, negative_cond)
 
-        # 6. Apply the DiT cross-attention patch to the model
+        # 5. Apply the DiT cross-attention patch to the model
         model_sampling = model_obj.get_model_object("model_sampling")
         start_sigma = float(model_sampling.percent_to_sigma(start_pct))
         end_sigma = float(model_sampling.percent_to_sigma(end_pct))
 
         patch = AnimaRegionalConditioningPatch(
             region_items=region_items,
-            base_mode=base_mode_val,
             base_strength=base_str,
             start_sigma=start_sigma,
             end_sigma=end_sigma,
@@ -752,3 +760,18 @@ class MoonAnimaRegionalPatcherAdvanced:
         patched_model.set_attachments(WRAPPER_KEY, patch)
 
         return (patched_model, final_pos, negative_cond)
+
+
+# ---------------------------------------------------------------------------
+# Node Class Mappings
+# ---------------------------------------------------------------------------
+
+NODE_CLASS_MAPPINGS = {
+    "MoonAnimaRegionalPatcher": MoonAnimaRegionalPatcher,
+    "MoonAnimaRegionalPatcherAdvanced": MoonAnimaRegionalPatcherAdvanced,
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "MoonAnimaRegionalPatcher": "Anima Regional Patcher",
+    "MoonAnimaRegionalPatcherAdvanced": "Anima Regional Patcher (Advanced)",
+}
