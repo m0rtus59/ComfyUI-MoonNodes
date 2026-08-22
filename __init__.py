@@ -5,7 +5,8 @@ from .py.nodes.regional_sampler import *
 from .py.nodes.moon_mask_maker_gui import *
 from .py.nodes.markdown_output import *
 from .py.nodes.multipass_sampler import *
-from .py.nodes.LLM_input import *
+from .py.nodes.LLM_input import ClearableTextInput, LLMSubmitInput
+from .py.nodes.quickstart_nodes import MoonQuickstart, MoonQuickstartAdvanced
 from .py.nodes.anima_regional import MoonAnimaRegionalPatcher, MoonAnimaRegionalPatcherAdvanced
 from .py.nodes.moon_wildcards import MoonSimpleWildcards
 from .py.nodes.moon_segs_to_indexed_masks import MoonSEGSToIndexedMasks
@@ -22,6 +23,7 @@ NODE_CLASS_MAPPINGS = {
     "MoonMultiPassSampler": MoonMultiPassSampler,
     "LLMSubmitInput": LLMSubmitInput,
     "MoonQuickstart": MoonQuickstart,
+    "MoonQuickstartAdvanced": MoonQuickstartAdvanced,
     "MoonAnimaRegionalPatcher": MoonAnimaRegionalPatcher,
     "MoonSimpleWildcards": MoonSimpleWildcards,
     "MoonSEGSToIndexedMasks": MoonSEGSToIndexedMasks,
@@ -40,6 +42,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonMultiPassSampler": "🌗 Moon Multi-Area KSampler (experiment)",
     "LLMSubmitInput": "🫙 LLM Submit Input",
     "MoonQuickstart": "🎲 Quickstart",
+    "MoonQuickstartAdvanced": "🎲 Quickstart (Advanced)",
     "MoonAnimaRegionalPatcher": "🌗 Moon Anima Regional Patcher",
     "MoonSimpleWildcards": "🎲 Moon Simple Wildcards",
     "MoonSEGSToIndexedMasks": "🌗 Moon SEGS to Indexed Mask List",
