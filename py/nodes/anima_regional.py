@@ -184,7 +184,27 @@ def _build_flux_self_attention_bias(
     return bias.unsqueeze(0).unsqueeze(0)
 
 
-def _masked_attn_op(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, transformer_options: Optional[dict] = None, attn_bias: Optional[torch.Tensor] = None) -> torch.Tensor:
+def _unwrap_attn_tensor(t):
+    # ComfyUI ≥ 0.38.0 may pass AttentionTensorContainer
+    if hasattr(t, "take") and callable(t.take):
+        return t.take()
+    if hasattr(t, "peek") and callable(t.peek):
+        return t.peek()
+    return t
+
+def _masked_attn_op(
+    q,
+    k,
+    v,
+    transformer_options: Optional[dict] = None,
+    attn_bias: Optional[torch.Tensor] = None,
+    preferred_attention=None,   # ComfyUI ≥ 0.38.0
+    **kwargs,
+) -> torch.Tensor:
+    q = _unwrap_attn_tensor(q)
+    k = _unwrap_attn_tensor(k)
+    v = _unwrap_attn_tensor(v)
+
     B, Sq, H, D = q.shape
     q_b = q.permute(0, 2, 1, 3)
     k_b = k.permute(0, 2, 1, 3)
