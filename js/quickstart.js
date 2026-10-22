@@ -306,12 +306,14 @@ app.registerExtension({
                 megaInput.min = "0.1";
                 megaInput.max = "16.0"; // Allow high custom sizes via manual typing
                 megaInput.step = "0.05";
-                megaInput.style.width = "48px";
+                megaInput.style.width = "64px";
+                megaInput.style.height = "24px";
+                megaInput.style.boxSizing = "border-box";
                 megaInput.style.backgroundColor = "#111";
                 megaInput.style.color = "#eee";
                 megaInput.style.border = "1px solid #444";
                 megaInput.style.borderRadius = "3px";
-                megaInput.style.padding = "3px";
+                megaInput.style.padding = "2px 4px";
                 megaInput.style.fontSize = "11px";
                 megaInput.style.textAlign = "center";
                 megaInput.style.fontFamily = "monospace";
@@ -358,12 +360,16 @@ app.registerExtension({
                 multLabel.style.flexShrink = "0";
 
                 const multSelect = document.createElement("select");
+                multSelect.style.width = "64px";
+                multSelect.style.height = "24px";
+                multSelect.style.boxSizing = "border-box";
                 multSelect.style.backgroundColor = "#242424";
                 multSelect.style.color = "#ddd";
                 multSelect.style.border = "1px solid #444";
                 multSelect.style.borderRadius = "3px";
                 multSelect.style.padding = "2px 6px";
                 multSelect.style.cursor = "pointer";
+                multSelect.style.flexShrink = "0";
 
                 [8, 16, 32, 64].forEach(m => {
                     const opt = document.createElement("option");
