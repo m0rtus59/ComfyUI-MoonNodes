@@ -166,6 +166,14 @@ The node generates a random integer seed and queues the workflow when clicked.
 
 An expanded Quickstart node that lets you pick image resolutions and aspect ratios.
 
+### **[NEW] Text concat node with up to 10 inputs simultaneously**
+
+Search for `🌗 Moon Text Concat` node
+
+### **[NEW] Multi input toggle switch**
+
+  <img src="assets/toggleswitch.png" alt="ComfySidebar runtime mode" width="100%">
+
 ---
 
 ## 🔒 Security & Sandboxing

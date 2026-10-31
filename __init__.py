@@ -10,8 +10,12 @@ from .py.nodes.quickstart_nodes import MoonQuickstart, MoonQuickstartAdvanced
 from .py.nodes.anima_regional import MoonAnimaRegionalPatcher, MoonAnimaRegionalPatcherAdvanced
 from .py.nodes.moon_wildcards import MoonSimpleWildcards
 from .py.nodes.moon_segs_to_indexed_masks import MoonSEGSToIndexedMasks
+from .py.nodes.moon_toggle_switch import MoonToggleSwitch
+from .py.nodes.moon_text_concat import MoonTextConcat
 
 NODE_CLASS_MAPPINGS = {
+    "MoonTextConcat": MoonTextConcat,
+    "MoonToggleSwitch": MoonToggleSwitch,
     "GeminiPersistentChat": GeminiPersistentChat,
     "GeminiAdvancedSettings": GeminiAdvancedSettings,
     "ClearableTextInput": ClearableTextInput,
@@ -47,6 +51,8 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MoonSimpleWildcards": "🎲 Moon Simple Wildcards",
     "MoonSEGSToIndexedMasks": "🌗 Moon SEGS to Indexed Mask List",
     "MoonAnimaRegionalPatcherAdvanced": "🌗 Moon Anima Regional Patcher (Advanced)",
+    "MoonToggleSwitch": "🌗 Moon Toggle Switch",
+    "MoonTextConcat": "🌗 Moon Text Concat",
 }
 
 WEB_DIRECTORY = "js"
