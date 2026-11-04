@@ -3,26 +3,20 @@ from comfy_api.latest import io
 class MoonTextConcat(io.ComfyNode):
     @classmethod
     def define_schema(cls):
-        # Generate dynamic options from 2 up to 10 inputs
-        dynamic_options = []
-        for n in range(2, 11):
-            sub_inputs = [
-                io.String.Input(f"text_{i}", multiline=True, default="", tooltip=f"Text input {i}")
-                for i in range(1, n + 1)
-            ]
-            dynamic_options.append(io.DynamicCombo.Option(str(n), sub_inputs))
+        # Autogrow template: starts with 2 inputs and automatically creates a new one when connected
+        autogrow_template = io.Autogrow.TemplatePrefix(
+            io.MultiType.Input("text", [io.String, io.Int, io.Float, io.Boolean], tooltip="Connect text, integer, float, or boolean"),
+            prefix="text",
+            min=2,
+            max=50,
+        )
 
         return io.Schema(
             node_id="MoonTextConcat",
             display_name="🌗 Moon Text Concat",
             category="MoonNodes/Text",
             inputs=[
-                # Dropdown dynamically rebuilds the node with N native multiline fields at runtime
-                io.DynamicCombo.Input(
-                    "inputs",
-                    options=dynamic_options,
-                    tooltip="Select how many text fields to display on the node.",
-                ),
+                io.Autogrow.Input("inputs", template=autogrow_template),
             ],
             outputs=[
                 io.String.Output(display_name="text"),
@@ -30,20 +24,18 @@ class MoonTextConcat(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, inputs: dict) -> io.NodeOutput:
-        # ComfyUI passes all active inputs (both wired and typed) in the 'inputs' dictionary
-        sorted_keys = sorted(
-            [k for k in inputs.keys() if k.startswith("text_")],
-            key=lambda k: int(k.split("_")[1]) if k.split("_")[1].isdigit() else 999
-        )
-
+    def execute(cls, inputs: io.Autogrow.Type) -> io.NodeOutput:
         texts = []
-        for k in sorted_keys:
-            val = inputs.get(k)
+
+        # Autogrow passes connected values in order
+        for val in inputs.values():
             if val is not None and str(val) != "":
-                # Converts literal \n or \t into real breaks, and preserves Enter keypresses
-                str_val = str(val).replace("\\n", "\n").replace("\\t", "\t")
-                texts.append(str_val)
+                try:
+                    # Converts numbers/booleans to text, converts literal \n or \t, and preserves line breaks
+                    str_val = str(val).replace("\\n", "\n").replace("\\t", "\t")
+                    texts.append(str_val)
+                except Exception as e:
+                    texts.append(f"[Error: {e}]")
 
         # Pure direct concatenation with no forced delimiters
         return io.NodeOutput("".join(texts))
