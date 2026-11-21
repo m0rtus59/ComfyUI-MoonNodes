@@ -414,7 +414,7 @@ app.registerExtension({
                 content.style.lineHeight = "1.5";
                 content.style.overflowY = "auto";
                 content.style.padding = "10px";
-                content.style.paddingTop = "30px";
+                content.style.paddingTop = "10px";
                 content.style.boxSizing = "border-box";
                 content.style.width = "100%";
                 content.style.height = "100%";
@@ -442,7 +442,7 @@ app.registerExtension({
                 copyButton.setAttribute("aria-label", "Copy all Markdown");
                 copyButton.style.position = "absolute";
                 copyButton.style.top = "5px";
-                copyButton.style.right = "5px";
+                copyButton.style.right = "18px";
                 copyButton.style.zIndex = "30";
                 copyButton.style.width = "26px";
                 copyButton.style.height = "24px";
