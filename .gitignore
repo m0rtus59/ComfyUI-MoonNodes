@@ -1,6 +1,9 @@
-# Ignore generated/user .txt wildcard files
+# Ignore generated/user .txt wildcard files, prompts and API keys
 wildcards/*
 !wildcards/.example/
+api_key.txt
+prompts/*
+!prompts/.gitkeep
 
 # Byte-compiled / optimized / DLL files
 __pycache__/

@@ -17,7 +17,6 @@ NODE_CLASS_MAPPINGS = {
     "MoonTextConcat": MoonTextConcat,
     "MoonToggleSwitch": MoonToggleSwitch,
     "GeminiPersistentChat": GeminiPersistentChat,
-    "GeminiAdvancedSettings": GeminiAdvancedSettings,
     "ClearableTextInput": ClearableTextInput,
     "MoonMaskMaker": MoonMaskMaker,
     "MoonIndexedEncoder": MoonIndexedEncoder,
@@ -36,7 +35,6 @@ NODE_CLASS_MAPPINGS = {
 
 NODE_DISPLAY_NAME_MAPPINGS = {
     "GeminiPersistentChat": "♊ Gemini Persistent Chat",
-    "GeminiAdvancedSettings": "♊ Gemini Advanced Settings",
     "ClearableTextInput": "🫙 Clearable Text Input",
     "MoonMaskMaker": "🌗 Moon Mask Maker Simple",
     "MoonIndexedEncoder": "🌗 Moon Indexed Encoder",
