@@ -64,6 +64,40 @@ function showSuccessState(button) {
     }, 1500);
 }
 
+function copyMarkdownText(button, text) {
+    const showCopied = () => {
+        button.textContent = "✓";
+        button.title = "Copied!";
+        button.style.color = "#ffffff";
+        button.style.backgroundColor = "#287a43";
+        setTimeout(() => {
+            button.textContent = "⧉";
+            button.title = "Copy all Markdown";
+            button.style.color = "#cccccc";
+            button.style.backgroundColor = "rgba(30, 30, 30, 0.9)";
+        }, 1200);
+    };
+
+    const fallback = () => {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.opacity = "0";
+        document.body.appendChild(textArea);
+        textArea.select();
+        const successful = document.execCommand("copy");
+        textArea.remove();
+        if (successful) showCopied();
+        else button.title = "Copy failed";
+    };
+
+    if (navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(text).then(showCopied).catch(fallback);
+    } else {
+        fallback();
+    }
+}
+
 // Parses inline styles (Bold, Italic, Strikethrough, Code, Links, Inline Math)
 function parseInlineMarkdown(html) {
     if (!html) return "";
@@ -361,27 +395,88 @@ app.registerExtension({
                 
                 const div = document.createElement("div");
                 div.className = "moon-markdown-container";
-                div.style.color = "#dddddd";
-                div.style.fontFamily = "sans-serif";
-                div.style.fontSize = "13px";
-                div.style.lineHeight = "1.5";
-                div.style.overflowY = "auto";
-                div.style.padding = "10px";
+                div.style.position = "relative";
+                div.style.width = "100%";
+                div.style.height = "174px";
+                div.style.overflow = "hidden";
                 div.style.backgroundColor = "#121212";
                 div.style.border = "1px solid #333333";
                 div.style.borderRadius = "4px";
                 div.style.boxSizing = "border-box";
-                div.style.width = "100%";
-                div.style.height = "174px";
                 div.style.pointerEvents = "auto";
-                
-                this.addDOMWidget("markdown_display", "div", div, {
-                    getValue() { return div.innerHTML; },
-                    setValue(v) { div.innerHTML = v; }
+
+                const content = document.createElement("div");
+                content.className = "moon-markdown-content";
+                content.tabIndex = 0;
+                content.style.color = "#dddddd";
+                content.style.fontFamily = "sans-serif";
+                content.style.fontSize = "13px";
+                content.style.lineHeight = "1.5";
+                content.style.overflowY = "auto";
+                content.style.padding = "10px";
+                content.style.paddingTop = "30px";
+                content.style.boxSizing = "border-box";
+                content.style.width = "100%";
+                content.style.height = "100%";
+                content.style.outline = "none";
+                content.style.pointerEvents = "auto";
+
+                // Keep Ctrl+A inside the Markdown display instead of triggering
+                // ComfyUI's canvas-wide select-all shortcut.
+                content.addEventListener("keydown", (event) => {
+                    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        const range = document.createRange();
+                        range.selectNodeContents(content);
+                        const selection = window.getSelection();
+                        selection.removeAllRanges();
+                        selection.addRange(range);
+                    }
+                }, true);
+
+                const copyButton = document.createElement("button");
+                copyButton.type = "button";
+                copyButton.textContent = "⧉";
+                copyButton.title = "Copy all Markdown";
+                copyButton.setAttribute("aria-label", "Copy all Markdown");
+                copyButton.style.position = "absolute";
+                copyButton.style.top = "5px";
+                copyButton.style.right = "5px";
+                copyButton.style.zIndex = "30";
+                copyButton.style.width = "26px";
+                copyButton.style.height = "24px";
+                copyButton.style.padding = "0";
+                copyButton.style.border = "1px solid #555";
+                copyButton.style.borderRadius = "4px";
+                copyButton.style.background = "rgba(30, 30, 30, 0.9)";
+                copyButton.style.color = "#cccccc";
+                copyButton.style.fontSize = "15px";
+                copyButton.style.lineHeight = "22px";
+                copyButton.style.cursor = "pointer";
+                copyButton.style.pointerEvents = "auto";
+                copyButton.addEventListener("mouseenter", () => {
+                    copyButton.style.background = "#444";
+                    copyButton.style.color = "#ffffff";
                 });
-                
-                this.markdownContainer = div;
-                this.size = [450, 220]; 
+                copyButton.addEventListener("mouseleave", () => {
+                    copyButton.style.background = "rgba(30, 30, 30, 0.9)";
+                    copyButton.style.color = "#cccccc";
+                });
+                copyButton.addEventListener("click", () => {
+                    copyMarkdownText(copyButton, this.properties?.markdown_text ?? "");
+                });
+
+                div.append(content, copyButton);
+
+                this.addDOMWidget("markdown_display", "div", div, {
+                    getValue() { return content.innerHTML; },
+                    setValue(v) { content.innerHTML = v; }
+                });
+
+                this.markdownContainer = content;
+                this.markdownWidget = div;
+                this.size = [450, 220];
             };
 
             // Restore the rendered Markdown HTML from properties when tabbing back or loading
@@ -394,8 +489,8 @@ app.registerExtension({
             };
 
             nodeType.prototype.onResize = function(size) {
-                if (this.markdownContainer) {
-                    this.markdownContainer.style.height = (size[1] - 46) + "px";
+                if (this.markdownWidget) {
+                    this.markdownWidget.style.height = (size[1] - 46) + "px";
                 }
             };
 
