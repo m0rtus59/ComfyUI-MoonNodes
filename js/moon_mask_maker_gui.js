@@ -1,6 +1,6 @@
 import { app } from "../../../scripts/app.js";
 import { api } from "../../../scripts/api.js";
-import { ComfyDialog } from "../../../scripts/ui.js";
+const { ComfyDialog } = window.comfyAPI.ui;
 
 const LAYER_COLORS = [
     "#FF0000", "#00FF00", "#0000FF", "#FFFF00",
