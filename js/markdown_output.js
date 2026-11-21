@@ -423,7 +423,7 @@ app.registerExtension({
 
                 // Keep Ctrl+A inside the Markdown display instead of triggering
                 // ComfyUI's canvas-wide select-all shortcut.
-                content.addEventListener("keydown", (event) => {
+                div.addEventListener("keydown", (event) => {
                     if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "a") {
                         event.preventDefault();
                         event.stopPropagation();
